@@ -13,8 +13,7 @@ Protect app. No ONVIF, no third-party camera entry.
 
 ## What works
 
-- The doorbell shows up in Protect as a native G4 Doorbell (or G5 Pro if you
-  prefer) and adopts itself
+- The doorbell shows up in Protect as a native G4 Doorbell and adopts itself
 - Live view and 24/7 recording in high and low quality, with audio
 - Snapshots and event thumbnails
 - Ring button: push notification, call screen and ring in the timeline
@@ -141,8 +140,7 @@ Prebuilt binaries are also attached to each
 If the doorbell is already in Protect via ONVIF, remove that entry first,
 otherwise you'll have it twice.
 
-The **Options** page lets you change the camera name, the model it shows up as,
-and turn talkback, events, settings sync and fast quality switching on or off.
+The **Options** page lets you change the camera name and turn talkback, events, settings sync and fast quality switching on or off.
 
 ## Ports
 

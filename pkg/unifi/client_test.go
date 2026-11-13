@@ -135,7 +135,7 @@ func TestCameraSession(t *testing.T) {
 	calls := &callLog{}
 	cam := &Camera{
 		Host: host, Port: port, Name: "Klingel", MAC: "02A1B2C3D4E5", IP: "192.168.1.236",
-		Doorbell: true, HasAudio: true, Identity: Identities["g5pro"], Cert: cert,
+		Doorbell: true, HasAudio: true, Identity: G4Doorbell, Cert: cert,
 		// like tokenSource: a cached token that turns out expired (403) is
 		// replaced by a fresh one, which is then reused
 		Token: func(_ context.Context, fresh bool) (string, error) {
@@ -177,7 +177,7 @@ func TestCameraSession(t *testing.T) {
 	conn := p.accept()
 	h := <-p.headers
 	require.Equal(t, "02A1B2C3D4E5", h.Get("camera-mac"))
-	require.Equal(t, "0xa598", h.Get("camera-model"))
+	require.Equal(t, "0xa571", h.Get("camera-model"))
 	require.Equal(t, "5.5.45", h.Get("camera-firmware"))
 	require.Equal(t, "192.168.1.236", h.Get("camera-ip"))
 	require.NotEmpty(t, h.Get("device-id"))
@@ -191,9 +191,9 @@ func TestCameraSession(t *testing.T) {
 	msg, hello := readMsg(t, conn)
 	require.Equal(t, "ubnt_avclient_hello", msg.FunctionName)
 	require.Equal(t, "good", hello["adoptionCode"])
-	require.Equal(t, float64(0xa598), hello["sysid"])
-	require.Equal(t, "sav837gw", hello["platform"])
-	require.Equal(t, "0dda191.261027.0537", hello["firmwareBuild"])
+	require.Equal(t, float64(0xa571), hello["sysid"])
+	require.Equal(t, "s5l", hello["platform"])
+	require.Equal(t, "0dda191.261027.0531", hello["firmwareBuild"])
 	require.Equal(t, "02:a1:b2:c3:d4:e5", hello["hwaddr"])
 	require.Equal(t, true, hello["isDoorbellSeries"])
 	features := hello["features"].(map[string]any)

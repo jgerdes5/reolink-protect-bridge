@@ -54,7 +54,6 @@ type Options struct {
 	Protect  Protect
 
 	Name     string // name sent to Protect
-	Model    string // identity preset, see unifi.Identities
 	MAC      string // 12 hex digits, the camera's identity in Protect
 	Cert     string // PEM client certificate + key, the camera's TLS identity
 	IP       string // address Protect records; default: this host's address towards Protect
@@ -138,10 +137,6 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 	b.main = source.New("main", b.dialer("main"), logger)
 	b.sub = source.New("sub", b.dialer("sub"), logger)
 
-	id, ok := unifi.Identities[opts.Model]
-	if !ok {
-		id = unifi.Identities["g4doorbell"]
-	}
 	mac, err := NormalizeMAC(opts.MAC)
 	if err != nil {
 		return nil, err
@@ -169,7 +164,7 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		IP:       ip,
 		Doorbell: true,
 		HasAudio: true,
-		Identity: id,
+		Identity: unifi.G4Doorbell,
 		Cert:     cert,
 		Token:    tokens.get,
 		Channel:  b.channel,

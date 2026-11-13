@@ -19,7 +19,6 @@ func TestOpenCreatesIdentityOnce(t *testing.T) {
 	require.Equal(t, "02", cfg.Identity.MAC[:2])
 	require.Contains(t, cfg.Identity.Cert, "BEGIN CERTIFICATE")
 	require.Equal(t, "Doorbell", cfg.Camera.Name)
-	require.Equal(t, "g4doorbell", cfg.Camera.Model)
 	require.True(t, cfg.Camera.Events && cfg.Camera.Talkback && cfg.Camera.Settings)
 	require.False(t, cfg.Complete())
 

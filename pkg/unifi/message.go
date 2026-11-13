@@ -29,18 +29,16 @@ type Channel struct {
 // Identity is what Protect uses to recognise the camera model. Since Protect 3
 // it keys on sysid + platform + firmwareBuild, not on the model string.
 type Identity struct {
-	Model         string // e.g. "UVC G5 Pro"
-	SysID         uint32 // e.g. 0xa598
-	Platform      string // e.g. "sav837gw"
+	Model         string // "UVC G4 Doorbell"
+	SysID         uint32 // 0xa571
+	Platform      string // "s5l"
 	Firmware      string // short form, e.g. "5.5.45"
-	FirmwareBuild string // e.g. "0dda191.261027.0537"
+	FirmwareBuild string // e.g. "0dda191.261027.0531"
 }
 
-// Identities decoded from the official UniFi firmware v5.5.45 headers.
-var Identities = map[string]Identity{
-	"g5pro":      {"UVC G5 Pro", 0xa598, "sav837gw", "5.5.45", "0dda191.261027.0537"},
-	"g4doorbell": {"UVC G4 Doorbell", 0xa571, "s5l", "5.5.45", "0dda191.261027.0531"},
-}
+// G4Doorbell is the identity the bridge presents, decoded from the official
+// UniFi G4 Doorbell firmware v5.5.45 header. Verified with Protect 7.3.74.
+var G4Doorbell = Identity{"UVC G4 Doorbell", 0xa571, "s5l", "5.5.45", "0dda191.261027.0531"}
 
 func rfc3339ms(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")

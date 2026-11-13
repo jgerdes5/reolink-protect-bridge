@@ -126,7 +126,7 @@ func TestConfigSecretsWriteOnly(t *testing.T) {
 	require.Equal(t, "192.168.1.21", cfg.Doorbell.Host)
 	require.Empty(t, cfg.Protect.Token)
 
-	res, _ = c.do("PUT", "/api/config", map[string]any{"camera": map[string]any{"name": "Front", "model": "nope", "ring": "camera"}}, true)
+	res, _ = c.do("PUT", "/api/config", map[string]any{"camera": map[string]any{"name": "Front", "ring": "nope"}}, true)
 	require.Equal(t, 400, res.StatusCode)
 
 	mac := store.Get().Identity.MAC

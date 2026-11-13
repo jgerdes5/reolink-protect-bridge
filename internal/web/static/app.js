@@ -263,9 +263,7 @@ async function loadConfig() {
   setSecret(c, "p.token", config.protect.token.set);
 
   const o = $("#opt-form");
-  o.model.replaceChildren(...config.models.map(m => el("option", { value: m.id }, m.name)));
   o.cname.value = config.camera.name;
-  o.model.value = config.camera.model;
   o.ring.value = config.camera.ring;
   o.events.checked = config.camera.events;
   o.talkback.checked = config.camera.talkback;
@@ -332,7 +330,6 @@ $("#opt-form").addEventListener("submit", async ev => {
   const body = {
     camera: {
       name: f.cname.value.trim(),
-      model: f.model.value,
       ring: f.ring.value,
       events: f.events.checked,
       talkback: f.talkback.checked,

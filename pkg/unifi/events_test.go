@@ -41,7 +41,7 @@ func connectedCamera(t *testing.T, cam *Camera) (*fakeProtect, *websocket.Conn) 
 	require.NoError(t, err)
 	cam.Host, cam.Port = host, port
 	cam.Name, cam.MAC, cam.IP = "Klingel", "02A1B2C3D4E5", "127.0.0.1"
-	cam.Doorbell, cam.Identity = true, Identities["g5pro"]
+	cam.Doorbell, cam.Identity = true, G4Doorbell
 	cam.Token = func(context.Context, bool) (string, error) { return "good", nil }
 	cam.Channel = func(string) Channel { return Channel{Width: 640, Height: 480, FPS: 15} }
 	cam.Start = func(string, string, string) {}

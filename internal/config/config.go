@@ -41,8 +41,7 @@ type Protect struct {
 
 type Camera struct {
 	Name     string `json:"name"`
-	Model    string `json:"model"` // key of unifi.Identities
-	Ring     string `json:"ring"`  // "camera" or "api"
+	Ring     string `json:"ring"` // "camera" or "api"
 	Events   bool   `json:"events"`
 	Talkback bool   `json:"talkback"`
 	Settings bool   `json:"settings"` // apply Protect's camera settings to the doorbell
@@ -83,7 +82,6 @@ func Default() Config {
 		Doorbell: Doorbell{Username: "admin"},
 		Camera: Camera{
 			Name:       "Doorbell",
-			Model:      "g4doorbell",
 			Ring:       "camera",
 			Events:     true,
 			Talkback:   true,
@@ -100,9 +98,6 @@ func (c *Config) fillDefaults() {
 	d := Default()
 	if c.Camera.Name == "" {
 		c.Camera.Name = d.Camera.Name
-	}
-	if c.Camera.Model == "" {
-		c.Camera.Model = d.Camera.Model
 	}
 	if c.Camera.Ring == "" {
 		c.Camera.Ring = d.Camera.Ring
@@ -177,9 +172,6 @@ func (c Config) Validate() error {
 	if name == "" || utf8.RuneCountInString(name) > 64 {
 		return errors.New("camera name must be 1-64 characters")
 	}
-	if _, ok := unifi.Identities[c.Camera.Model]; !ok {
-		return fmt.Errorf("unknown camera model %q", c.Camera.Model)
-	}
 	if c.Camera.Ring != "camera" && c.Camera.Ring != "api" {
 		return fmt.Errorf("unknown ring method %q", c.Camera.Ring)
 	}
@@ -230,7 +222,6 @@ func (c Config) Options() bridge.Options {
 			Token:    c.Protect.Token,
 		},
 		Name:       strings.TrimSpace(c.Camera.Name),
-		Model:      c.Camera.Model,
 		MAC:        c.Identity.MAC,
 		Cert:       c.Identity.Cert,
 		Ring:       c.Camera.Ring,

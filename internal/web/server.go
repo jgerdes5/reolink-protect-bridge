@@ -243,12 +243,6 @@ type configView struct {
 	Identity struct {
 		MAC string `json:"mac"`
 	} `json:"identity"`
-	Models []model `json:"models"`
-}
-
-type model struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
 }
 
 func viewOf(c config.Config) configView {
@@ -260,11 +254,6 @@ func viewOf(c config.Config) configView {
 	v.Protect.Token.Set = c.Protect.Token != ""
 	v.Camera = c.Camera
 	v.Identity.MAC = c.Identity.MAC
-	for _, id := range []string{"g4doorbell", "g5pro"} {
-		if ident, ok := unifi.Identities[id]; ok {
-			v.Models = append(v.Models, model{ID: id, Name: strings.TrimPrefix(ident.Model, "UVC ")})
-		}
-	}
 	return v
 }
 
@@ -398,10 +387,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 		Missing:    cfg.Missing(),
 		Name:       cfg.Camera.Name,
 		MAC:        cfg.Identity.MAC,
-		Model:      cfg.Camera.Model,
-	}
-	if id, ok := unifi.Identities[cfg.Camera.Model]; ok {
-		v.Model = strings.TrimPrefix(id.Model, "UVC ")
+		Model:      strings.TrimPrefix(unifi.G4Doorbell.Model, "UVC "),
 	}
 	if s.opts.Runner != nil {
 		b, startErr := s.opts.Runner.Current()
