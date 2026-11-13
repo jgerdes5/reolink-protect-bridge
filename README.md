@@ -11,21 +11,60 @@ Protect app. No ONVIF, no third-party camera entry.
 > UniFi Protect 7.3.74. Expect rough edges and please open an issue if
 > something doesn't work for you.
 
-## Features
+## What works
 
-- Shows up in Protect as a native doorbell (G4 Doorbell, or G5 Pro if you prefer)
+- The doorbell shows up in Protect as a native G4 Doorbell (or G5 Pro if you
+  prefer) and adopts itself
 - Live view and 24/7 recording in high and low quality, with audio
-- Ring button: notification, call screen and ring in the timeline
-- Two-way audio from the Protect app
-- Motion and smart detections (person, vehicle, animal) from the doorbell's
-  own AI, with real bounding boxes, thumbnails, zones, line crossing and
-  loitering
-- Camera settings in Protect are applied to the doorbell: picture, night
-  vision, HDR, mirror/flip, status light, volumes, privacy masks (up to 4
-  rectangles), name/date overlay, detection zones and sensitivity
-- Small web page for setup, with automatic discovery of the doorbell and the
-  console
+- Snapshots and event thumbnails
+- Ring button: push notification, call screen and ring in the timeline
+- Two-way audio (talkback) from the Protect app and web UI
+- Motion events
+- Smart detections for person, vehicle and animal, coming from the doorbell's
+  own AI, with real bounding boxes that follow the object in live view
+- Smart detection zones, line crossing and loitering zones
+- These Protect settings are applied to the doorbell:
+  - brightness, contrast, saturation, hue, sharpness, noise reduction
+  - mirror and flip, anti-flicker (50/60 Hz)
+  - night vision (auto, on, off) and HDR
+  - status light (the doorbell's button light)
+  - speaker volume and ring volume (0 mutes the doorbell's own chime)
+  - privacy masks (up to 4 rectangles)
+  - name, date and logo overlay
+  - motion detection on/off, sensitivity and zones
+  - smart detection types, sensitivity and zones
+- Faster switching between high and low quality (optional)
+- Web page for setup, with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
+- Works with the UniFi Protect integration in Home Assistant, which sees it as
+  a normal Protect doorbell
+
+## What doesn't work
+
+- H.265: the doorbell has to be set to H.264
+- More than one doorbell per bridge, and more than one bridge per IP address
+  (Protect always sends talkback to UDP port 7004)
+- Custom ringtones from Protect: the doorbell keeps playing its own chime
+- Face recognition and licence plate detection: the doorbell's AI doesn't
+  provide them
+- Package detection and audio detections (smoke alarm, glass break, ...)
+- Instant quality switching: Protect can show a short black frame when you
+  switch between high and low quality, because Reolink can't produce a
+  keyframe on request like UniFi cameras do. Fast quality switching shortens
+  it to about half a second.
+- These Protect settings have no counterpart on the doorbell and are ignored:
+  - video bitrate and frame rate
+  - IR LED intensity
+  - status sounds
+  - microphone volume
+  - lens distortion correction
+  - date format of the overlay
+  - the custom night vision threshold (treated as "auto")
+- Privacy masks are rectangles only; free-form shapes are turned into their
+  bounding box
+- Displays and LCD messages: the Reolink doorbell has no display
+- HomeKit talkback through Protect
+- Protect updates can change the camera protocol at any time
 
 ## How it works
 
@@ -107,27 +146,10 @@ and turn talkback, events, settings sync and fast quality switching on or off.
 
 ## Ports
 
-| From | To | Port |
-|---|---|---|
-| Bridge | Doorbell | TCP 9000 |
-| Bridge | UniFi console | TCP 443, 7442, 7444, 7550 |
-| UniFi console | Bridge | UDP 7004 (talkback) |
-| Browser | Bridge | TCP 8080 (web page, not used with the add-on) |
-
-## Limitations
-
-- One doorbell per bridge (and per IP address, because of the fixed talkback
-  port)
-- H.264 only
-- No custom ringtones from Protect; the doorbell keeps its own chime
-- Some Protect settings have no counterpart on the doorbell (video bitrate and
-  frame rate, IR intensity, status sounds, lens correction) and are ignored
-- Face and licence plate recognition don't work, the doorbell's AI doesn't
-  provide them
-- Switching between high and low quality in Protect can show a short black
-  frame. Real UniFi cameras produce a keyframe on demand, Reolink can't. The
-  *fast quality switching* option halves the delay.
-- Protect updates can change the protocol at any time
+- Bridge → doorbell: TCP 9000
+- Bridge → UniFi console: TCP 443, 7442, 7444 and 7550
+- UniFi console → bridge: UDP 7004 (talkback)
+- Browser → bridge: TCP 8080 (web page, not used with the Home Assistant add-on)
 
 ## Troubleshooting
 
