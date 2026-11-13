@@ -256,6 +256,7 @@ func TestOsdChange(t *testing.T) {
 	require.True(t, osdChange(unifi.OSD{Name: "", Date: true, Logo: true, Location: "topRight"})(b))
 	require.Equal(t, "0", b.Value("OsdChannelName/enable"))
 	require.Equal(t, "Haustuer Sued", b.Value("OsdChannelName/name"))
+	require.Equal(t, "0", b.Value("OsdChannelName/enWatermark")) // Protect's logo is not Reolink's
 }
 
 func TestOsdName(t *testing.T) {

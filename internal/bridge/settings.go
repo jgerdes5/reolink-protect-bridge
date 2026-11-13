@@ -851,9 +851,11 @@ var osdAnchors = map[string][2]string{
 	"bottomLeft": {"1", "65536"}, "bottomMiddle": {"65537", "65536"}, "bottomRight": {"65536", "65536"},
 }
 
-// osdChange sets the name, date and logo overlay. The name goes to Protect's
+// osdChange sets the name and date overlay. The name goes to Protect's
 // position and the date to the other vertical edge (Reolink places them
-// separately, Protect has one position).
+// separately, Protect has one position). Protect's "logo" is the UniFi logo
+// a UniFi camera draws; the Reolink watermark is never what that means, so
+// it stays off (Protect turns its logo on by default).
 func osdChange(o unifi.OSD) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
 		changed := false
@@ -869,7 +871,7 @@ func osdChange(o unifi.OSD) func(*baichuan.Node) bool {
 			set("OsdChannelName/enable", "0")
 		}
 		set("OsdDatetime/enable", boolStr(o.Date))
-		set("OsdChannelName/enWatermark", boolStr(o.Logo))
+		set("OsdChannelName/enWatermark", "0")
 		if pos, ok := osdAnchors[o.Location]; ok {
 			set("OsdChannelName/topLeftX", pos[0])
 			set("OsdChannelName/topLeftY", pos[1])
