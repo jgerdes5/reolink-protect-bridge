@@ -806,8 +806,12 @@ func aiAreaChange(zones []unifi.Zone, sens int) func(*baichuan.Node) bool {
 	}
 }
 
-// gopChange sets mainStream/subStream gop/cur to fps frames, clamped to
-// gop/min..max.
+// gopChange sets mainStream/subStream gop/cur to one second. Reolink
+// firmware counts it either in frames or, like the D340W (dvr.xml
+// main_gop_tm 1-2, gop_tm 1-4), in seconds: a range that tops out at 8 or
+// less is seconds (no frame-counting encoder caps a GOP that low).
+const gopSecondsMax = 8
+
 func gopChange(b *baichuan.Node) bool {
 	changed := false
 	for _, stream := range []string{"mainStream", "subStream"} {
@@ -816,6 +820,9 @@ func gopChange(b *baichuan.Node) bool {
 			continue
 		}
 		want := fps
+		if hi, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/max")); err == nil && hi > 0 && hi <= gopSecondsMax {
+			want = 1 // seconds
+		}
 		if lo, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/min")); err == nil && want < lo {
 			want = lo
 		}

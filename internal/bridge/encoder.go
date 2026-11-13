@@ -75,8 +75,8 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 		}
 	}
 	for i, s := range enc {
-		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, keyframe every %s frames, offers %v fps and %v kbit/s",
-			encStreams[i], s.fps, s.kbps, body.Value("Compression/"+encStreams[i]+"/gop/cur"), s.fpsTable, s.kbpsTable)
+		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, keyframe interval %s, offers %v fps and %v kbit/s",
+			encStreams[i], s.fps, s.kbps, gopText(body, encStreams[i]), s.fpsTable, s.kbpsTable)
 	}
 }
 
@@ -243,4 +243,13 @@ func (b *Bridge) applyVideo(ctx context.Context, c *baichuan.Client, ch uint8, r
 	}
 	b.setEncoder(enc)
 	return nil
+}
+
+// gopText is a stream's keyframe interval in its unit (see gopChange).
+func gopText(b *baichuan.Node, stream string) string {
+	cur := b.Value("Compression/" + stream + "/gop/cur")
+	if hi, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/max")); err == nil && hi > 0 && hi <= gopSecondsMax {
+		return cur + " s"
+	}
+	return cur + " frames"
 }

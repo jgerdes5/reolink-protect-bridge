@@ -196,6 +196,20 @@ func TestGopChange(t *testing.T) {
 	require.False(t, gopChange(b))
 }
 
+// The D340W counts the keyframe interval in seconds (main 1-2, sub 1-4): one
+// second is 1, not the frame rate clamped to the maximum.
+func TestGopChangeSeconds(t *testing.T) {
+	xml := `<body><Compression version="1.1"><channelId>0</channelId>
+<mainStream><frame>20</frame><gop><cur>2</cur><max>2</max><min>1</min></gop></mainStream>
+<subStream><frame>15</frame><gop><cur>4</cur><max>4</max><min>1</min></gop></subStream>
+</Compression></body>`
+	b := parse(t, xml)
+	require.True(t, gopChange(b))
+	require.Equal(t, "1", b.Value("Compression/mainStream/gop/cur"))
+	require.Equal(t, "1", b.Value("Compression/subStream/gop/cur"))
+	require.False(t, gopChange(b))
+}
+
 const shelterXML = `<body><Shelter version="1.1"><channelId>0</channelId><enable>1</enable><shelterList>
 <Shelter><id>0</id><enable>1</enable><layer>0</layer><color>0</color><topLeftX>6553600640</topLeftX><topLeftY>480</topLeftY><width>13107840</width><height>6553920</height></Shelter>
 </shelterList></Shelter></body>`
