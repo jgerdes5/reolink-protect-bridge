@@ -360,8 +360,17 @@ func update(ctx context.Context, c *baichuan.Client, get, set uint32, ch uint8, 
 	if err != nil {
 		return err
 	}
+	debug := log.Debug().Enabled()
+	var before []byte
+	if debug {
+		before = body.Marshal()
+	}
 	if !change(body) {
 		return nil
+	}
+	if debug { // what the doorbell had and what it gets: to see what it keeps
+		log.Debug().Msgf("[settings] %s: doorbell had %s", what, before)
+		log.Debug().Msgf("[settings] %s: writing %s", what, body.Marshal())
 	}
 	if err = c.SetConfig(ctx, set, ch, body); err != nil {
 		return err
@@ -422,6 +431,9 @@ func imageChange(isp *unifi.ISP, hdr string) func(*baichuan.Node) bool {
 			}
 		}
 		if hdr != "" {
+			if b.Find("InputAdvanceCfg/hdrSwitch") == nil {
+				log.Info().Msg("[settings] the doorbell's picture settings have no HDR switch: HDR not applied")
+			}
 			set("InputAdvanceCfg/hdrSwitch", hdr)
 		}
 		return changed
