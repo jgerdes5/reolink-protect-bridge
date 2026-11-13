@@ -223,6 +223,20 @@ func TestMaskChange(t *testing.T) {
 	require.Len(t, b.Find("Shelter/shelterList").Children, 4)
 }
 
+// Protect's Privacy Mode is a privacy zone over the whole frame: it becomes
+// one mask over the whole picture, so the doorbell's video is black (its ring
+// button and events keep working, unlike Reolink's sleep mode).
+func TestPrivacyModeMask(t *testing.T) {
+	b := parse(t, `<body><Shelter version="1.1"><channelId>0</channelId><enable>0</enable><shelterList></shelterList></Shelter></body>`)
+	require.True(t, maskChange([]unifi.Mask{{ID: 1, Coord: []float64{0, 0, 1000, 0, 1000, 1000, 0, 1000}}})(b))
+	require.Equal(t, "1", b.Value("Shelter/enable"))
+	first := b.Find("Shelter/shelterList").Children[0]
+	require.Equal(t, strconv.Itoa(0<<16|1000), first.Value("topLeftX"))
+	require.Equal(t, strconv.Itoa(0<<16|1000), first.Value("topLeftY"))
+	require.Equal(t, strconv.Itoa(1000<<16|1000), first.Value("width"))
+	require.Equal(t, strconv.Itoa(1000<<16|1000), first.Value("height"))
+}
+
 const osdXML = `<body><OsdDatetime version="1.1"><channelId>0</channelId><enable>1</enable><topLeftX>1</topLeftX><topLeftY>65536</topLeftY><width>0</width><height>0</height><language>English</language></OsdDatetime>
 <OsdChannelName version="1.1"><channelId>0</channelId><name>Doorbell</name><enable>1</enable><topLeftX>1</topLeftX><topLeftY>1</topLeftY><enWatermark>1</enWatermark><enBgcolor>0</enBgcolor></OsdChannelName></body>`
 

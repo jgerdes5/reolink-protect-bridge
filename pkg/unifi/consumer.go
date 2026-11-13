@@ -620,3 +620,32 @@ func hevcParameterSets(avcc []byte) (vps, sps, pps []byte) {
 	}
 	return
 }
+
+// RTT answers Protect's round-trip probe (feedback type 4) the way a UniFi
+// camera does (libubnt_encoder ContainerFLV::FeedRtt/BuildOnRtt): an onRtt
+// script tag right away, with the probe's id echoed as 4 raw bytes,
+// rttMillis = our clock now minus the trailer timestamp Protect echoes (in
+// the probe's clock rate), and encDelay = capture-to-encoder latency, 0 here
+// since nothing is encoded. Nothing is sent before the stream has started.
+func (c *Consumer) RTT(body []byte) {
+	if len(body) < 16 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wr == nil || c.closed || !c.started {
+		return
+	}
+	rate := int64(binary.BigEndian.Uint32(body[4:8]))
+	echoed := int64(binary.BigEndian.Uint64(body[8:16]))
+	rtt := -1.0
+	if now := ticks(c.now().Sub(c.mux.start), rate); rate > 0 && now >= echoed {
+		rtt = float64(((now-echoed)*1000 + rate/2) / rate)
+	}
+	msg := Object{
+		{"encDelay", 0.0},
+		{"id", string(body[0:4])},
+		{"rttMillis", rtt},
+	}
+	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.vpos, ScriptData("onRtt", msg)))
+}

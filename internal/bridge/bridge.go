@@ -463,6 +463,10 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	// Protect closing the connection.
 	go func() {
 		_ = unifi.ReadFeedback(conn, func(f unifi.Feedback) {
+			if f.Type == unifi.FeedbackRTT {
+				cons.RTT(f.Body)
+				return
+			}
 			if !b.onFeedback(channel, passthrough, f) {
 				_ = conn.Close()
 			}

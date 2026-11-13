@@ -29,7 +29,8 @@ Protect app. No ONVIF, no third-party camera entry.
   - night vision (auto, on, off, custom threshold) and HDR
   - status light (the doorbell's button light)
   - speaker volume and ring volume (0 mutes the doorbell's own chime)
-  - privacy masks (up to 4 rectangles)
+  - privacy masks (up to 4 rectangles); a mask over the whole picture works
+    as a privacy mode, while the ring button and events keep working
   - name, date and logo overlay
   - motion detection on/off, sensitivity and zones
   - smart detection types, sensitivity and zones

@@ -442,3 +442,49 @@ func TestConsumerHEVC(t *testing.T) {
 	require.Equal(t, append([]byte{0x18, 1, 0, 0, 0}, key...), tags[4].payload)
 	require.Equal(t, append([]byte{0x28, 1, 0, 0, 0}, avcc(pslice)...), tags[5].payload)
 }
+
+// The onRtt reply: 62-byte script body as the camera builds it.
+func TestConsumerRTT(t *testing.T) {
+	sps, _ := base64.StdEncoding.DecodeString(testSPS)
+	c := NewConsumer(StreamOptions{StreamName: "s"})
+	c.video = &core.Codec{Name: core.CodecH264, ClockRate: 90000, PayloadType: core.PayloadTypeRAW}
+	start := time.Unix(1000, 0)
+	now := start
+	c.now = func() time.Time { return now }
+	out := &syncBuffer{}
+
+	c.RTT(make([]byte, 16)) // before streaming: nothing
+	go func() { _, _ = c.WriteTo(out) }()
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.wr != nil
+	}, time.Second, time.Millisecond)
+	c.handleVideo(&rtp.Packet{Payload: avcc(sps, []byte{0x68, 0xce, 0x38, 0x80}, []byte{0x65, 0x88})})
+	before := len(out.Bytes())
+
+	// Protect echoes our trailer from 2 s into the stream; 2.25 s have passed
+	now = start.Add(2250 * time.Millisecond)
+	probe := []byte{'a', 'b', 'c', 'd', 0, 0, 0, 0} // id, then the rate
+	binary.BigEndian.PutUint32(probe[4:], 90000)
+	probe = binary.BigEndian.AppendUint64(probe, 2*90000)
+	c.RTT(probe)
+
+	tags := parseUniFi(t, out.Bytes()[before:])
+	require.Len(t, tags, 1)
+	require.Len(t, tags[0].payload, 62)
+	items, err := amf.NewReader(tags[0].payload).ReadItems()
+	require.NoError(t, err)
+	require.Equal(t, "onRtt", items[0])
+	m := items[1].(map[string]any)
+	require.Equal(t, "abcd", m["id"])
+	require.Equal(t, float64(250), m["rttMillis"])
+	require.Equal(t, float64(0), m["encDelay"])
+
+	// an echoed time ahead of our clock: -1
+	binary.BigEndian.PutUint64(probe[8:], 10*90000)
+	c.RTT(probe)
+	tags = parseUniFi(t, out.Bytes()[before:])
+	items, _ = amf.NewReader(tags[1].payload).ReadItems()
+	require.Equal(t, float64(-1), items[1].(map[string]any)["rttMillis"])
+}
