@@ -29,7 +29,7 @@ type keyframer struct {
 
 // keyframeGap merges requests for the same stream: Protect may ask on several
 // channels at once (video2 and video3 share the sub stream).
-const keyframeGap = 500 * time.Millisecond
+const keyframeGap = 200 * time.Millisecond
 
 // iframer is the part of baichuan.Client the keyframer uses.
 type iframer interface {
