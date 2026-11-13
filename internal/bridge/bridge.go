@@ -544,7 +544,9 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	rtt := make(chan []byte, 1)
 	go func() {
 		for body := range rtt {
-			cons.RTT(body)
+			if ms, ok := cons.RTT(body); ok {
+				log.Trace().Msgf("[bridge] %s: round trip %.0f ms", channel, ms)
+			}
 		}
 	}()
 	go func() {

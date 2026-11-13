@@ -666,16 +666,16 @@ func hevcParameterSets(avcc []byte) (vps, sps, pps []byte) {
 // here follow the source's clock, which may be off wall time by up to
 // maxDrift, so the send time of each recent trailer is kept instead. An
 // unknown trailer gives -1. Nothing is sent before the stream has started.
-func (c *Consumer) RTT(body []byte) {
+func (c *Consumer) RTT(body []byte) (rttMillis float64, sent bool) {
 	if len(body) < 16 {
-		return
+		return 0, false
 	}
 	rate := int64(binary.BigEndian.Uint32(body[4:8]))
 	echoed := binary.BigEndian.Uint64(body[8:16])
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.wr == nil || c.closed || !c.started {
-		return
+		return 0, false
 	}
 	now := c.now()
 	rtt := -1.0
@@ -691,4 +691,5 @@ func (c *Consumer) RTT(body []byte) {
 	}
 	c.mux.stamp = now
 	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.mux.last, scriptData("onRtt", msg)))
+	return rtt, true
 }
