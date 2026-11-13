@@ -74,7 +74,7 @@ func (s *settings) SmartDetect(v unifi.SmartDetect) {
 	}
 	s.mu.Unlock()
 	if s.b != nil {
-		s.b.tracker.setZones(v.Zones, v.Lines)
+		s.b.tracker.setZones(v.Zones, v.Lines, v.LoiterZones)
 	}
 	s.schedule()
 }

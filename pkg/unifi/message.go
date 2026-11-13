@@ -57,11 +57,13 @@ func (c *Camera) featureFlags() map[string]any {
 		mic = 1
 	}
 	flags := map[string]any{
-		"mic":                  mic,
-		"aec":                  []any{},
-		"videoMode":            []string{"default"},
-		"motionDetect":         []string{"enhanced"},                    // ChangeSmartMotionSettings
-		"smartDetect":          []string{"person", "vehicle", "animal"}, // what Reolink's AI detects
+		"mic":          mic,
+		"aec":          []any{},
+		"videoMode":    []string{"default"},
+		"motionDetect": []string{"enhanced"}, // ChangeSmartMotionSettings
+		// what Reolink's AI detects; lines and loitering are evaluated by the
+		// bridge from the doorbell's boxes (lineCrossing* unlock the line tab)
+		"smartDetect":          []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"},
 		"videoCodecs":          []string{"h264"},
 		"audioCodecs":          []string{"aac"},
 		"audioStyle":           []string{"nature"},

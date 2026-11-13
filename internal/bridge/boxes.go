@@ -3,6 +3,7 @@ package bridge
 import (
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
@@ -17,15 +18,19 @@ type tracker struct {
 	mu     sync.Mutex
 	zones  map[int]unifi.Zone
 	lines  map[int]unifi.Line
+	loiter map[int]unifi.Zone
 	object string // current smart-detect object type, "" between events
 
-	inZone map[int]bool
-	side   map[[2]int]float64 // (track, line) -> side of the line last frame
-	counts map[int]*unifi.LineCross
+	inZone   map[int]bool
+	side     map[[2]int]float64 // (track, line) -> side of the line last frame
+	counts   map[int]*unifi.LineCross
+	since    map[int]time.Time // loiter zone -> since when an object is inside
+	loiterOn map[int]bool      // loiter zones triggered in this event
+	now      func() time.Time  // for tests
 }
 
 func newTracker() *tracker {
-	t := &tracker{}
+	t := &tracker{now: time.Now}
 	t.reset()
 	return t
 }
@@ -34,13 +39,20 @@ func (t *tracker) reset() {
 	t.inZone = map[int]bool{}
 	t.side = map[[2]int]float64{}
 	t.counts = map[int]*unifi.LineCross{}
+	t.since = map[int]time.Time{}
+	t.loiterOn = map[int]bool{}
 }
 
 // setZones takes Protect's smart-detect zones and lines.
-func (t *tracker) setZones(zones map[string]unifi.Zone, lines map[string]unifi.Line) {
+func (t *tracker) setZones(zones map[string]unifi.Zone, lines map[string]unifi.Line, loiter map[string]unifi.Zone) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.zones, t.lines = map[int]unifi.Zone{}, map[int]unifi.Line{}
+	t.zones, t.lines, t.loiter = map[int]unifi.Zone{}, map[int]unifi.Line{}, map[int]unifi.Zone{}
+	for k, z := range loiter {
+		if id, err := strconv.Atoi(k); err == nil {
+			t.loiter[id] = z
+		}
+	}
 	for k, z := range zones {
 		if id, err := strconv.Atoi(k); err == nil {
 			t.zones[id] = z
@@ -68,8 +80,10 @@ func (t *tracker) frame(raw []baichuan.AIBox, w, h int) unifi.Detection {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	det := unifi.Detection{Zones: map[int]string{}, Lines: map[int]unifi.LineCross{}}
+	det := unifi.Detection{Zones: map[int]string{}, Lines: map[int]unifi.LineCross{}, Loiter: map[int]string{}}
 	now := map[int]bool{}
+	inLoiter := map[int]bool{}
+	clock := t.now()
 	for i, r := range raw {
 		b := unifi.Box{
 			X: r.X1 * 1000 / w, Y: r.Y1 * 1000 / h,
@@ -90,6 +104,20 @@ func (t *tracker) frame(raw []baichuan.AIBox, w, h int) unifi.Detection {
 			if inPolygon(z.Coord, px, py) {
 				b.Zones = append(b.Zones, id)
 				now[id] = true
+			}
+		}
+
+		for id, z := range t.loiter {
+			wait, ok := loiterTime(z, t.object)
+			if !ok || !inPolygon(z.Coord, px, py) {
+				continue
+			}
+			inLoiter[id] = true
+			if _, in := t.since[id]; !in {
+				t.since[id] = clock
+			}
+			if clock.Sub(t.since[id]) >= wait {
+				b.Loiter = append(b.Loiter, id)
 			}
 		}
 
@@ -129,6 +157,23 @@ func (t *tracker) frame(raw []baichuan.AIBox, w, h int) unifi.Detection {
 		det.Boxes = append(det.Boxes, b)
 	}
 
+	for id, start := range t.since {
+		wait, _ := loiterTime(t.loiter[id], t.object)
+		switch {
+		case !inLoiter[id]:
+			delete(t.since, id)
+			if t.loiterOn[id] {
+				det.Loiter[id] = "leave"
+				delete(t.loiterOn, id)
+			}
+		case clock.Sub(start) >= wait && !t.loiterOn[id]:
+			t.loiterOn[id] = true
+			det.Loiter[id] = "enter"
+		case t.loiterOn[id]:
+			det.Loiter[id] = "moving"
+		}
+	}
+
 	for id := range now {
 		if t.inZone[id] {
 			det.Zones[id] = "moving"
@@ -161,4 +206,20 @@ func withinSegment(c []float64, x, y float64) bool {
 	}
 	t := ((x-c[0])*dx + (y-c[1])*dy) / l2
 	return t >= 0 && t <= 1
+}
+
+// loiterTime is how long the object type must stay in a loiter zone; ok is
+// false if the zone does not watch that type. Without a type (between events)
+// the shortest time counts.
+func loiterTime(z unifi.Zone, object string) (time.Duration, bool) {
+	best, ok := 0, false
+	for _, lt := range z.LoiterTimes {
+		if object != "" && lt.ObjectType != object {
+			continue
+		}
+		if !ok || lt.MSec < best {
+			best, ok = lt.MSec, true
+		}
+	}
+	return time.Duration(best) * time.Millisecond, ok
 }

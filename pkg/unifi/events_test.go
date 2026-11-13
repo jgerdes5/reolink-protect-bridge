@@ -231,7 +231,7 @@ func TestFeatureFlags(t *testing.T) {
 	require.Equal(t, true, f["doorbell"])
 	require.Equal(t, true, f["supportCustomRingtone"]) // doorbell tone section; Protect would fall back to isDoorbell
 	require.Equal(t, true, f["ledStatus"])             // without it Protect rejects LED changes
-	require.Equal(t, []string{"person", "vehicle", "animal"}, f["smartDetect"])
+	require.Equal(t, []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"}, f["smartDetect"])
 
 	cam.Talk = func([]byte) {}
 	require.Equal(t, true, cam.featureFlags()["speaker"])

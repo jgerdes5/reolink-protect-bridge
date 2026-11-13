@@ -73,6 +73,14 @@ type Zone struct {
 	Sensitivity int       `json:"sensitivity"` // 0-100
 	ObjectTypes []string  `json:"objectTypes"`
 	Level       int       `json:"level"` // motion zones: 100 - sensitivity
+	// loiter zones: how long (ms) each object type must stay to trigger
+	LoiterTimes map[string]LoiterTime `json:"loiterTriggerTimeMaps"`
+}
+
+// LoiterTime is one entry of a loiter zone's loiterTriggerTimeMaps.
+type LoiterTime struct {
+	MSec       int    `json:"loiterTriggerTime"`
+	ObjectType string `json:"objectType"`
 }
 
 // Line is a line-crossing line: P1, P2 and a reference point A on the "A" side.

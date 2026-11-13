@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"testing"
+	"time"
 
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
@@ -22,7 +23,7 @@ func TestTrackerZonesAndLines(t *testing.T) {
 		// vertical line at x=600, A side = left (reference point at x<600)
 		"5": {Coord: []float64{600, 0, 600, 1000, 100, 500}, Direction: "none", ObjectTypes: []string{"person"}},
 		"6": {Coord: []float64{600, 0, 600, 1000, 100, 500}, Direction: "B2A"},
-	})
+	}, nil)
 	tr.setObject("person")
 
 	d := tr.frame(walk(100), 1000, 1000) // foot point x=150
@@ -66,4 +67,39 @@ func TestWithinSegment(t *testing.T) {
 	line := []float64{600, 0, 600, 500, 100, 250}
 	require.True(t, withinSegment(line, 650, 250))
 	require.False(t, withinSegment(line, 650, 800)) // beside the end of the line
+}
+
+func TestTrackerLoiter(t *testing.T) {
+	tr := newTracker()
+	clock := time.Unix(1000, 0)
+	tr.now = func() time.Time { return clock }
+	tr.setZones(nil, nil, map[string]unifi.Zone{
+		"7": {Coord: []float64{0, 0, 500, 0, 500, 1000, 0, 1000},
+			LoiterTimes: map[string]unifi.LoiterTime{"0": {MSec: 10000, ObjectType: "person"}}},
+	})
+	tr.setObject("person")
+
+	d := tr.frame(walk(100), 1000, 1000)
+	require.Empty(t, d.Loiter)
+	clock = clock.Add(9 * time.Second)
+	d = tr.frame(walk(120), 1000, 1000)
+	require.Empty(t, d.Loiter) // not yet 10 s
+
+	clock = clock.Add(2 * time.Second)
+	d = tr.frame(walk(130), 1000, 1000)
+	require.Equal(t, map[int]string{7: "enter"}, d.Loiter)
+	require.Equal(t, []int{7}, d.Boxes[0].Loiter)
+
+	clock = clock.Add(time.Second)
+	d = tr.frame(walk(140), 1000, 1000)
+	require.Equal(t, map[int]string{7: "moving"}, d.Loiter)
+
+	d = tr.frame(walk(700), 1000, 1000) // walked out
+	require.Equal(t, map[int]string{7: "leave"}, d.Loiter)
+
+	// a vehicle loiter time does not apply to people
+	tr.setZones(nil, nil, map[string]unifi.Zone{"8": {Coord: []float64{0, 0, 1000, 0, 1000, 1000, 0, 1000},
+		LoiterTimes: map[string]unifi.LoiterTime{"0": {MSec: 0, ObjectType: "vehicle"}}}})
+	d = tr.frame(walk(100), 1000, 1000)
+	require.Empty(t, d.Loiter)
 }

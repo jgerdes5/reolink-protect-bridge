@@ -20,6 +20,7 @@ type Box struct {
 	TrackerID  int   // stable per object; 0 = assign from the event
 	Zones      []int // smart-detect zone ids the object is in
 	Lines      []int // line ids crossed in this frame
+	Loiter     []int // loiter zone ids the object has stayed in long enough
 }
 
 func (b Box) coord() []int { return []int{b.X, b.Y, b.W, b.H} }
@@ -33,9 +34,10 @@ type LineCross struct {
 
 // Detection is one frame's objects and zone/line states.
 type Detection struct {
-	Boxes []Box
-	Zones map[int]string    // zone id -> enter | moving | leave
-	Lines map[int]LineCross // line id -> counts
+	Boxes  []Box
+	Zones  map[int]string    // zone id -> enter | moving | leave
+	Lines  map[int]LineCross // line id -> counts
+	Loiter map[int]string    // loiter zone id -> enter | moving | leave
 }
 
 const (
@@ -65,6 +67,9 @@ func (c *Camera) Detections(d Detection) {
 	p["zonesStatus"] = zoneStatuses(d.Zones)
 	if len(d.Lines) > 0 {
 		p["linesStatus"] = lineStatuses(d.Lines, e.object)
+	}
+	if len(d.Loiter) > 0 {
+		p["loiterZonesStatus"] = zoneStatuses(d.Loiter)
 	}
 	p["displayTimeoutMSec"] = smartDisplayMs
 	p["descriptors"] = descriptors(e, d.Boxes)
@@ -110,6 +115,7 @@ func descriptors(e *event, boxes []Box) []any {
 		}
 		d["zones"] = nonNil(b.Zones)
 		d["lines"] = nonNil(b.Lines)
+		d["loiterZones"] = nonNil(b.Loiter)
 		out = append(out, d)
 	}
 	return out
