@@ -75,7 +75,8 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 		}
 	}
 	for i, s := range enc {
-		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, offers %v fps and %v kbit/s", encStreams[i], s.fps, s.kbps, s.fpsTable, s.kbpsTable)
+		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, keyframe every %s frames, offers %v fps and %v kbit/s",
+			encStreams[i], s.fps, s.kbps, body.Value("Compression/"+encStreams[i]+"/gop/cur"), s.fpsTable, s.kbpsTable)
 	}
 }
 
