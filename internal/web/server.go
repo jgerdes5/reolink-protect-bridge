@@ -7,8 +7,11 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -50,7 +53,11 @@ type Server struct {
 
 // New builds the handler.
 func New(opts Options) *Server {
-	s := &Server{opts: opts, sessions: newSessions(), limiter: newLimiter(), mux: http.NewServeMux()}
+	sessionFile := ""
+	if opts.Store != nil {
+		sessionFile = filepath.Join(filepath.Dir(opts.Store.Path()), "sessions.json")
+	}
+	s := &Server{opts: opts, sessions: newSessions(sessionFile), limiter: newLimiter(), mux: http.NewServeMux()}
 
 	static, _ := fs.Sub(staticFS, "static")
 	files := http.FileServerFS(static)
@@ -68,6 +75,7 @@ func New(opts Options) *Server {
 	s.mux.HandleFunc("GET /api/config", s.auth(s.handleGetConfig))
 	s.mux.HandleFunc("PUT /api/config", s.auth(s.handlePutConfig))
 	s.mux.HandleFunc("POST /api/identity", s.auth(s.handleNewIdentity))
+	s.mux.HandleFunc("POST /api/password", s.auth(s.handlePassword))
 	s.mux.HandleFunc("GET /api/status", s.auth(s.handleStatus))
 	s.mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
 	s.mux.HandleFunc("GET /api/discover", s.auth(s.handleDiscover))
@@ -243,6 +251,13 @@ type configView struct {
 	Identity struct {
 		MAC string `json:"mac"`
 	} `json:"identity"`
+	Advanced advanced `json:"advanced"`
+	Ingress  bool     `json:"ingress"`
+}
+
+type advanced struct {
+	Listen string `json:"listen"` // web page address; takes effect after an app restart
+	FFmpeg string `json:"ffmpeg"`
 }
 
 func viewOf(c config.Config) configView {
@@ -254,11 +269,12 @@ func viewOf(c config.Config) configView {
 	v.Protect.Token.Set = c.Protect.Token != ""
 	v.Camera = c.Camera
 	v.Identity.MAC = c.Identity.MAC
+	v.Advanced = advanced{Listen: c.Web.Listen, FFmpeg: c.FFmpeg}
 	return v
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, viewOf(s.opts.Store.Get()))
+	writeJSON(w, http.StatusOK, s.view(s.opts.Store.Get()))
 }
 
 // configInput is a PUT body. Absent sections stay unchanged; empty secrets
@@ -279,7 +295,8 @@ type configInput struct {
 		ClearPassword bool   `json:"clearPassword"`
 		ClearToken    bool   `json:"clearToken"`
 	} `json:"protect"`
-	Camera *config.Camera `json:"camera"`
+	Camera   *config.Camera `json:"camera"`
+	Advanced *advanced      `json:"advanced"`
 }
 
 func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
@@ -319,6 +336,17 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			cam.Name = strings.TrimSpace(cam.Name)
 			c.Camera = cam
 		}
+		if a := in.Advanced; a != nil {
+			listen := strings.TrimSpace(a.Listen)
+			if _, port, err := net.SplitHostPort(listen); err != nil || port == "" {
+				return fmt.Errorf("web page address %q: use host:port or :port", listen)
+			}
+			ffmpeg := strings.TrimSpace(a.FFmpeg)
+			if ffmpeg == "" {
+				ffmpeg = "ffmpeg"
+			}
+			c.Web.Listen, c.FFmpeg = listen, ffmpeg
+		}
 		return nil
 	})
 	if err != nil {
@@ -326,7 +354,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.applied(before, cfg)
-	writeJSON(w, http.StatusOK, viewOf(cfg))
+	writeJSON(w, http.StatusOK, s.view(cfg))
 }
 
 func (s *Server) handleNewIdentity(w http.ResponseWriter, _ *http.Request) {
@@ -346,7 +374,7 @@ func (s *Server) handleNewIdentity(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.opts.Log.Warn().Str("mac", cfg.Identity.MAC).Msg("[web] new camera identity: Protect sees a new camera, adopt it again")
 	s.applied(before, cfg)
-	writeJSON(w, http.StatusOK, viewOf(cfg))
+	writeJSON(w, http.StatusOK, s.view(cfg))
 }
 
 // applied updates log masking and restarts the bridge if its options changed
@@ -460,4 +488,45 @@ func (s *Server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"devices": devices})
+}
+
+type passwordChange struct {
+	Current  string `json:"current"`
+	Password string `json:"password"`
+}
+
+// handlePassword changes the admin password; other sessions are logged out.
+func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Ingress {
+		writeError(w, http.StatusConflict, "logins are handled by Home Assistant")
+		return
+	}
+	ip := clientIP(r)
+	if wait := s.limiter.blocked(ip); wait > 0 {
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many attempts, try again in %s", wait.Round(time.Second)))
+		return
+	}
+	var in passwordChange
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if !s.opts.Store.Get().CheckAdminPassword(in.Current) {
+		s.limiter.fail(ip)
+		writeError(w, http.StatusForbidden, "the current password is wrong")
+		return
+	}
+	if _, err := s.opts.Store.Update(func(c *config.Config) error { return c.SetAdminPassword(in.Password) }); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	s.limiter.success(ip)
+	s.sessions.clear()
+	s.opts.Log.Info().Msg("[web] admin password changed")
+	s.startSession(w, r)
+}
+
+func (s *Server) view(c config.Config) configView {
+	v := viewOf(c)
+	v.Ingress = s.opts.Ingress
+	return v
 }

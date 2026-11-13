@@ -96,6 +96,8 @@
         <div class="found" id="found-doorbell" hidden></div>
         <label>Address <input name="d.host" placeholder="192.168.1.50" autocomplete="off"></label>
         <label>Port <input name="d.port" type="number" min="1" max="65535" placeholder="9000"></label>
+        <label>Channel <input name="d.channel" type="number" min="0" max="255" placeholder="0"></label>
+        <p class="hint">0 for a doorbell on its own; its channel number if it is connected through a Reolink NVR or Home Hub.</p>
         <label>User <input name="d.username" autocomplete="off" placeholder="admin"></label>
         <label>Password <input name="d.password" type="password" autocomplete="new-password" data-secret></label>
         <p class="hint" data-hint="d.password"></p>
@@ -138,6 +140,29 @@
         <p class="error" data-error></p>
         <span class="ok" data-ok></span>
         <button class="primary" type="submit">Save and restart</button>
+      </div>
+    </form>
+    <form id="pw-form" class="card">
+      <h2>Admin password</h2>
+      <label>Current password <input name="current" type="password" autocomplete="current-password" required></label>
+      <label>New password <input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="72" required></label>
+      <label>Repeat new password <input name="password2" type="password" autocomplete="new-password" minlength="8" maxlength="72" required></label>
+      <div class="actions">
+        <p class="error" data-error></p>
+        <span class="ok" data-ok></span>
+        <button class="primary" type="submit">Change password</button>
+      </div>
+    </form>
+    <form id="adv-form" class="card">
+      <h2>Advanced</h2>
+      <label>Web page address <input name="listen" placeholder=":8080" required></label>
+      <p class="hint">host:port or :port. Takes effect when the app restarts.</p>
+      <label>ffmpeg <input name="ffmpeg" placeholder="ffmpeg"></label>
+      <p class="hint">Path to ffmpeg, used for snapshots and talkback.</p>
+      <div class="actions">
+        <p class="error" data-error></p>
+        <span class="ok" data-ok></span>
+        <button class="primary" type="submit">Save</button>
       </div>
     </form>
     <div class="card danger">

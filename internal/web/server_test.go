@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/jgerdes5/reolink-protect-bridge/internal/config"
@@ -196,4 +199,70 @@ func TestIngressMode(t *testing.T) {
 	resp, js := c.raw("GET", "/app.js")
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	require.NotContains(t, js, `"/api/`) // relative: works under /api/hassio_ingress/<token>/
+}
+
+func TestPasswordChangeAndPersistentSessions(t *testing.T) {
+	c, store := newTest(t)
+	res, _ := c.do("POST", "/api/setup", map[string]string{"password": "first-pass"}, true)
+	require.Equal(t, 200, res.StatusCode)
+
+	// a second browser
+	jar, _ := cookiejar.New(nil)
+	other := &client{t: t, srv: c.srv, c: &http.Client{Jar: jar}}
+	res, _ = other.do("POST", "/api/login", map[string]string{"password": "first-pass"}, true)
+	require.Equal(t, 200, res.StatusCode)
+
+	// the session file holds hashes, not the cookie values
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(store.Path()), "sessions.json"))
+	require.NoError(t, err)
+	for _, ck := range jar.Cookies(mustURL(t, c.srv.URL)) {
+		require.NotContains(t, string(data), ck.Value)
+	}
+
+	// a restarted server (same data dir) still knows the session
+	again := httptest.NewServer(New(Options{Store: store, Logs: logbuf.New(nil, 10), Log: zerolog.Nop(), Version: "test"}))
+	defer again.Close()
+	restarted := &client{t: t, srv: again, c: &http.Client{Jar: jar}}
+	for _, ck := range jar.Cookies(mustURL(t, c.srv.URL)) {
+		jar.SetCookies(mustURL(t, again.URL), []*http.Cookie{ck})
+	}
+	res, _ = restarted.do("GET", "/api/status", nil, false)
+	require.Equal(t, 200, res.StatusCode)
+
+	res, _ = c.do("POST", "/api/password", map[string]string{"current": "wrong-pass", "password": "second-pass"}, true)
+	require.Equal(t, 403, res.StatusCode)
+	res, _ = c.do("POST", "/api/password", map[string]string{"current": "first-pass", "password": "short"}, true)
+	require.Equal(t, 400, res.StatusCode)
+	res, _ = c.do("POST", "/api/password", map[string]string{"current": "first-pass", "password": "second-pass"}, true)
+	require.Equal(t, 200, res.StatusCode)
+
+	res, _ = c.do("GET", "/api/status", nil, false) // this browser got a new session
+	require.Equal(t, 200, res.StatusCode)
+	res, _ = other.do("GET", "/api/status", nil, false) // the other one was logged out
+	require.Equal(t, 401, res.StatusCode)
+	require.True(t, store.Get().CheckAdminPassword("second-pass"))
+}
+
+func TestAdvancedSettings(t *testing.T) {
+	c, store := newTest(t)
+	res, _ := c.do("POST", "/api/setup", map[string]string{"password": "first-pass"}, true)
+	require.Equal(t, 200, res.StatusCode)
+
+	res, body := c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": ":9090", "ffmpeg": "/usr/bin/ffmpeg"}}, true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, ":9090", body["advanced"].(map[string]any)["listen"])
+	require.Equal(t, "/usr/bin/ffmpeg", store.Get().FFmpeg)
+
+	res, _ = c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": "nonsense"}}, true)
+	require.Equal(t, 400, res.StatusCode)
+
+	res, _ = c.do("PUT", "/api/config", map[string]any{"doorbell": map[string]any{"host": "10.0.0.5", "username": "admin", "channel": 2}}, true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, 2, store.Get().Doorbell.Channel)
+}
+
+func mustURL(t *testing.T, s string) *url.URL {
+	u, err := url.Parse(s)
+	require.NoError(t, err)
+	return u
 }

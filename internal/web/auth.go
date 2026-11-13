@@ -2,9 +2,13 @@ package web
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -14,13 +18,46 @@ const (
 	sessionMaxAge = 7 * 24 * time.Hour
 )
 
-// sessions is the server-side session store (in memory: a restart logs out).
+// sessions is the server-side session store. It is kept in a file next to the
+// config so a restart does not log everyone out; only SHA-256 hashes of the
+// tokens are stored, so the file does not contain usable cookies.
 type sessions struct {
 	mu   sync.Mutex
-	byID map[string]time.Time // token -> expiry
+	byID map[string]time.Time // token hash -> expiry
+	path string               // "" = memory only
 }
 
-func newSessions() *sessions { return &sessions{byID: map[string]time.Time{}} }
+func newSessions(path string) *sessions {
+	s := &sessions{byID: map[string]time.Time{}, path: path}
+	if path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			_ = json.Unmarshal(b, &s.byID)
+		}
+	}
+	return s
+}
+
+func hashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+// save writes the store; must be called with s.mu held.
+func (s *sessions) save() {
+	if s.path == "" {
+		return
+	}
+	b, _ := json.Marshal(s.byID)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".sessions.*.tmp")
+	if err != nil {
+		return
+	}
+	_, werr := tmp.Write(b)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil || os.Chmod(tmp.Name(), 0o600) != nil || os.Rename(tmp.Name(), s.path) != nil {
+		_ = os.Remove(tmp.Name())
+	}
+}
 
 func (s *sessions) create() (string, error) {
 	b := make([]byte, 32)
@@ -36,7 +73,8 @@ func (s *sessions) create() (string, error) {
 			delete(s.byID, t)
 		}
 	}
-	s.byID[token] = now.Add(sessionMaxAge)
+	s.byID[hashToken(token)] = now.Add(sessionMaxAge)
+	s.save()
 	return token, nil
 }
 
@@ -46,9 +84,11 @@ func (s *sessions) valid(token string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	exp, ok := s.byID[token]
+	h := hashToken(token)
+	exp, ok := s.byID[h]
 	if ok && time.Now().After(exp) {
-		delete(s.byID, token)
+		delete(s.byID, h)
+		s.save()
 		return false
 	}
 	return ok
@@ -57,13 +97,15 @@ func (s *sessions) valid(token string) bool {
 func (s *sessions) remove(token string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.byID, token)
+	delete(s.byID, hashToken(token))
+	s.save()
 }
 
 func (s *sessions) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	clear(s.byID)
+	s.save()
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {

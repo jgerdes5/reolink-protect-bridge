@@ -256,6 +256,7 @@ async function loadConfig() {
   c["d.host"].value = config.doorbell.host;
   c["d.port"].value = config.doorbell.port || "";
   c["d.username"].value = config.doorbell.username;
+  c["d.channel"].value = config.doorbell.channel || "";
   c["p.host"].value = config.protect.host;
   c["p.username"].value = config.protect.username;
   setSecret(c, "d.password", config.doorbell.password.set);
@@ -270,6 +271,13 @@ async function loadConfig() {
   o.settings.checked = config.camera.settings;
   o.fastSwitch.checked = config.camera.fastSwitch;
   $("#opt-mac").textContent = config.identity.mac.replace(/(..)(?!$)/g, "$1:");
+
+  const a = $("#adv-form");
+  a.listen.value = config.advanced.listen;
+  a.ffmpeg.value = config.advanced.ffmpeg;
+  // in Home Assistant the page is only reached through Ingress
+  $("#pw-form").hidden = config.ingress;
+  a.listen.disabled = config.ingress;
 }
 
 // secrets are write-only: the field stays empty and a hint says one is stored
@@ -303,7 +311,7 @@ $("#conn-form").addEventListener("submit", async ev => {
       port: parseInt(f["d.port"].value, 10) || 0,
       username: f["d.username"].value.trim(),
       password: f["d.password"].value,
-      channel: config ? config.doorbell.channel : 0,
+      channel: parseInt(f["d.channel"].value, 10) || 0,
     },
     protect: {
       host: f["p.host"].value.trim(),
@@ -342,6 +350,34 @@ $("#opt-form").addEventListener("submit", async ev => {
       await api("PUT", "api/config", body);
       await loadConfig();
       flashOK(f, "Saved. The bridge restarts.");
+    } catch (e) { formError(f, e.message); }
+  });
+});
+
+$("#pw-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  formError(f, "");
+  if (f.password.value !== f.password2.value) return formError(f, "The new passwords do not match.");
+  await busy($("button[type=submit]", f), async () => {
+    try {
+      await api("POST", "api/password", { current: f.current.value, password: f.password.value });
+      f.reset();
+      flashOK(f, "Password changed. Other sessions were logged out.");
+    } catch (e) { formError(f, e.message); }
+  });
+});
+
+$("#adv-form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const f = ev.target;
+  formError(f, "");
+  const body = { advanced: { listen: f.listen.value.trim(), ffmpeg: f.ffmpeg.value.trim() } };
+  await busy($("button[type=submit]", f), async () => {
+    try {
+      await api("PUT", "api/config", body);
+      await loadConfig();
+      flashOK(f, "Saved.");
     } catch (e) { formError(f, e.message); }
   });
 });
