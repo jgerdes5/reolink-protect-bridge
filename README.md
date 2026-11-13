@@ -35,7 +35,10 @@ Protect app. No ONVIF, no third-party camera entry.
 - H.264 and H.265. With the doorbell on H.265, turn on enhanced encoding
   (H.265) for the camera in Protect; the bridge converts the doorbell's
   low-quality stream, which is always H.264, with ffmpeg
-- Faster switching between high and low quality (optional)
+- Quick start of live view and quality switching: when Protect asks for a
+  keyframe, the bridge asks the doorbell for one
+- Faster switching between high and low quality (optional, shorter keyframe
+  interval as a fallback)
 - Web page for setup, with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
 - Works with the UniFi Protect integration in Home Assistant, which sees it as
@@ -49,10 +52,6 @@ Protect app. No ONVIF, no third-party camera entry.
 - Face recognition and licence plate detection: the doorbell's AI doesn't
   provide them
 - Package detection and audio detections (smoke alarm, glass break, ...)
-- Instant quality switching: Protect can show a short black frame when you
-  switch between high and low quality, because Reolink can't produce a
-  keyframe on request like UniFi cameras do. Fast quality switching shortens
-  it to about half a second.
 - These Protect settings have no counterpart on the doorbell and are ignored:
   - video bitrate and frame rate
   - IR LED intensity

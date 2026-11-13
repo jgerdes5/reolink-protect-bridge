@@ -134,7 +134,7 @@ func (s *settings) flush() {
 	defer cancel()
 
 	d := s.b.opts.Doorbell
-	client, err := baichuan.Dial(ctx, baichuan.Config{Host: d.Host, Port: d.Port, Username: d.Username, Password: d.Password})
+	client, err := s.b.dialControl(ctx)
 	if err != nil {
 		log.Warn().Err(err).Msg("[settings] can't reach the doorbell")
 		return
@@ -537,12 +537,13 @@ const (
 // doorbell reports. Protect's live view starts a stream at its next keyframe
 // when the viewer switches quality; a UniFi camera makes one on request
 // (ForceIDR, from Protect's feedback on the stream socket), the Reolink
-// can't, so the interval is the wait.
+// can't by itself, but the bridge passes Protect's requests on as
+// IFRAME_REQUEST (keyframe.go); the interval is the fallback.
 func (b *Bridge) applyKeyframes(ctx context.Context) {
 	d := b.opts.Doorbell
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	client, err := baichuan.Dial(ctx, baichuan.Config{Host: d.Host, Port: d.Port, Username: d.Username, Password: d.Password})
+	client, err := b.dialControl(ctx)
 	if err != nil {
 		log.Debug().Err(err).Msg("[settings] keyframe interval: can't reach the doorbell")
 		return

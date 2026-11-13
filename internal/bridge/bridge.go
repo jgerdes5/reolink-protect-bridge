@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"os/exec"
@@ -85,6 +84,7 @@ type Bridge struct {
 	eventsUp   bool
 	settings   *settings
 	tracker    *tracker
+	keys       *keyframer
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -137,6 +137,7 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		snapSem: make(chan struct{}, 1),
 		tracker: newTracker(),
 	}
+	b.keys = newKeyframer(uint8(opts.Doorbell.Channel), func(ctx context.Context) (iframer, error) { return b.dialControl(ctx) })
 	b.main = source.New("main", b.dialer("main"), logger)
 	b.sub = source.New("sub", b.dialer("sub"), logger)
 
@@ -245,6 +246,13 @@ func (b *Bridge) Run(ctx context.Context) {
 			<-r.done
 		}
 	}
+	b.keys.close()
+}
+
+// dialControl opens a Baichuan connection for commands.
+func (b *Bridge) dialControl(ctx context.Context) (*baichuan.Client, error) {
+	d := b.opts.Doorbell
+	return baichuan.Dial(ctx, baichuan.Config{Host: d.Host, Port: d.Port, Username: d.Username, Password: d.Password})
 }
 
 // probe learns resolution, frame rate and audio of both streams.
@@ -424,7 +432,8 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	cons.URL = "unifi:" + channel
 
 	// Source first: while the doorbell is offline Protect sees no empty connections.
-	if err := b.attach(ctx, channel, src, cons, info, codec); err != nil {
+	passthrough, err := b.attach(ctx, channel, src, cons, info, codec)
+	if err != nil {
 		return err
 	}
 	defer cons.Stop()
@@ -444,10 +453,15 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	})
 	defer stop()
 
-	// Protect sends small messages back on this socket; reading them keeps the
-	// TCP window open and notices Protect closing the connection.
+	// Protect sends small messages back on this socket (keyframe requests
+	// among them); reading them also keeps the TCP window open and notices
+	// Protect closing the connection.
 	go func() {
-		_, _ = io.Copy(io.Discard, conn)
+		_ = unifi.ReadFeedback(conn, func(f unifi.Feedback) {
+			if !b.onFeedback(channel, passthrough, f) {
+				_ = conn.Close()
+			}
+		})
 		_ = cons.Stop()
 	}()
 
@@ -458,23 +472,23 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 var errTranscode = errors.New("transcoding failed")
 
 // attach connects a channel's consumer to its source: directly if the doorbell
-// sends the codec Protect asks for, else through ffmpeg. The returned
-// consumer's Stop also releases the source.
-func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source, cons *unifi.Consumer, info unifi.Channel, codec string) error {
+// sends the codec Protect asks for, else through ffmpeg (passthrough false).
+// The consumer's Stop also releases the source.
+func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source, cons *unifi.Consumer, info unifi.Channel, codec string) (passthrough bool, err error) {
 	addCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	if codec == "" || codec == info.Codec {
 		if err := src.AddConsumer(addCtx, cons); err != nil {
-			return err
+			return false, err
 		}
 		if video, _ := cons.TrackCodecs(); video == nil {
 			src.RemoveConsumer(cons)
 			_ = cons.Stop()
-			return errNoVideo
+			return false, errNoVideo
 		}
 		cons.OnStop(func() { src.RemoveConsumer(cons) })
-		return nil
+		return true, nil
 	}
 
 	if channelIndex(channel) == 0 {
@@ -483,15 +497,15 @@ func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source,
 		b.noteCodec(channel, true, fmt.Sprintf("Protect expects %s but the doorbell's main stream is %s: "+
 			"set the doorbell to %s or switch Protect's encoding for this camera", upper(codec), upper(info.Codec), upper(codec)))
 		if err := src.AddConsumer(addCtx, cons); err != nil {
-			return err
+			return false, err
 		}
 		cons.OnStop(func() { src.RemoveConsumer(cons) })
-		return nil
+		return true, nil
 	}
 
 	tr := newTranscoder(cons, codec, info.FPS)
 	if err := src.AddConsumer(addCtx, tr); err != nil {
-		return err
+		return false, err
 	}
 	release := func() {
 		src.RemoveConsumer(tr)
@@ -499,16 +513,16 @@ func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source,
 	}
 	if !tr.hasVideo() {
 		release()
-		return errNoVideo
+		return false, errNoVideo
 	}
 	if err := tr.run(ctx, b.opts.FFmpeg); err != nil {
 		release()
 		_ = cons.Stop()
-		return fmt.Errorf("%w (%s %s to %s): %w", errTranscode, channel, upper(info.Codec), upper(codec), err)
+		return false, fmt.Errorf("%w (%s %s to %s): %w", errTranscode, channel, upper(info.Codec), upper(codec), err)
 	}
 	b.noteCodec(channel, false, fmt.Sprintf("transcoding %s from %s to %s with ffmpeg", channel, upper(info.Codec), upper(codec)))
 	cons.OnStop(release)
-	return nil
+	return false, nil
 }
 
 // noteCodec logs a codec note once per channel and message.

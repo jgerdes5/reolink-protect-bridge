@@ -106,3 +106,29 @@ func DecodeArea(s string, cols, rows int) ([]bool, error) {
 	}
 	return out, nil
 }
+
+// MsgIframeRequest makes the encoder of one stream start a new keyframe
+// (IFRAME_REQUEST; D340W netserver handler 0x54470, param RequestIframe).
+// The doorbell answers 200 at once, before the keyframe is made.
+const MsgIframeRequest = 189
+
+// RequestIframe asks for a keyframe on stream ("mainStream", "subStream").
+func (c *Client) RequestIframe(ctx context.Context, channel uint8, stream string) error {
+	if err := c.Login(ctx); err != nil {
+		return err
+	}
+	_, err := c.sendRequest(ctx, request{
+		MsgID:     MsgIframeRequest,
+		ChannelID: channel + 1,
+		Class:     classModernWithOffset,
+		Extension: channelExtension(channel),
+		Body:      IframeBody(channel, stream),
+	})
+	return err
+}
+
+// IframeBody is the RequestIframe body; the firmware takes the channel from
+// here, not from the extension, and fails without a body.
+func IframeBody(channel uint8, stream string) []byte {
+	return []byte(fmt.Sprintf("%s<body>\n<RequestIframe version=\"1.1\">\n<channelId>%d</channelId>\n<streamType>%s</streamType>\n</RequestIframe>\n</body>\n", xmlHeader, channel, stream))
+}
