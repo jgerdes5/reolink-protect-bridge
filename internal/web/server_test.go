@@ -455,3 +455,14 @@ func TestLoginRateLimitParallel(t *testing.T) {
 	require.LessOrEqual(t, tried.Load(), int32(5))
 	require.Equal(t, int32(30), tried.Load()+blocked.Load())
 }
+
+func TestLogDownload(t *testing.T) {
+	c, _ := newTest(t)
+	res, _ := c.raw("GET", "/api/logs.txt")
+	require.Equal(t, 401, res.StatusCode)
+	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
+	res, _ = c.raw("GET", "/api/logs.txt")
+	require.Equal(t, 200, res.StatusCode)
+	require.Contains(t, res.Header.Get("Content-Disposition"), "attachment")
+	require.Contains(t, res.Header.Get("Content-Type"), "text/plain")
+}

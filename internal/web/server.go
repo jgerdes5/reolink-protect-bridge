@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -87,6 +88,7 @@ func New(opts Options) *Server {
 	s.mux.HandleFunc("POST /api/password", s.auth(s.handlePassword))
 	s.mux.HandleFunc("GET /api/status", s.auth(s.handleStatus))
 	s.mux.HandleFunc("GET /api/logs", s.auth(s.handleLogs))
+	s.mux.HandleFunc("GET /api/logs.txt", s.auth(s.handleLogFile))
 	s.mux.HandleFunc("GET /api/discover", s.auth(s.handleDiscover))
 	s.mux.HandleFunc("GET /api/snapshot.jpg", s.auth(s.handleSnapshot))
 	return s
@@ -527,6 +529,20 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		lines = s.opts.Logs.Lines(n)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
+}
+
+// handleLogFile downloads every kept line (the page shows the newest ones).
+func (s *Server) handleLogFile(w http.ResponseWriter, _ *http.Request) {
+	var lines []string
+	if s.opts.Logs != nil {
+		lines = s.opts.Logs.Lines(0)
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="reolink-protect-bridge.log"`)
+	w.Header().Set("Cache-Control", "no-store")
+	for _, l := range lines {
+		_, _ = io.WriteString(w, l+"\n")
+	}
 }
 
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {

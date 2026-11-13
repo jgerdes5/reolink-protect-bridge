@@ -212,7 +212,7 @@ async function refreshStatus() {
 
 async function refreshLogs() {
   try {
-    const d = await api("GET", "api/logs?n=200");
+    const d = await api("GET", "api/logs?n=1000");
     const pre = $("#log");
     const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     pre.textContent = d.lines.join("\n");
@@ -246,6 +246,40 @@ async function refreshSnapshot() {
   });
 }
 $("#snap-refresh").addEventListener("click", refreshSnapshot);
+
+// Copies every kept log line. navigator.clipboard only exists on HTTPS or
+// localhost; the page is usually plain HTTP, so fall back to a hidden
+// textarea and execCommand("copy").
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.append(ta);
+  ta.select();
+  const ok = document.execCommand("copy");
+  ta.remove();
+  if (!ok) throw new Error("the browser refused to copy");
+}
+
+$("#log-copy").addEventListener("click", ev => busy(ev.currentTarget, async () => {
+  const msg = $("#log-copy-msg");
+  try {
+    const res = await fetch("api/logs.txt", { credentials: "same-origin" });
+    if (!res.ok) throw new Error(res.statusText);
+    const text = await res.text();
+    await copyText(text);
+    msg.textContent = "Copied " + text.split("\n").filter(Boolean).length + " lines";
+  } catch (e) {
+    msg.textContent = "Copy failed: " + e.message;
+  }
+  setTimeout(() => { msg.textContent = ""; }, 4000);
+}));
 
 // --- config ---
 

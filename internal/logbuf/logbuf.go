@@ -18,7 +18,7 @@ import (
 )
 
 // Size is the default number of lines kept.
-const Size = 500
+const Size = 5000
 
 // Buffer is a zerolog writer. It is safe for concurrent use.
 type Buffer struct {
