@@ -69,7 +69,8 @@ type StreamOptions struct {
 	StreamName string // from Protect's ChangeVideoSettings
 	Channel    int    // 0, 1, 2 for video1, video2, video3
 	FPS        int
-	Bitrate    int // advertised bandwidth in bit/s
+	Bitrate    int // the stream's bitrate in bit/s (onMetaData, onMpma)
+	BitrateMin int // the lowest it can be set to (onMpma), 0 = unknown
 	// FFmpegMetadata sends ffmpeg's onMetaData (ECMA array) like unifi-cam-proxy,
 	// instead of the AMF object a real camera sends.
 	FFmpegMetadata bool
@@ -291,6 +292,9 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 		}
 		c.started = true
 		c.mux = newMuxer(now)
+		if c.opts.Bitrate > 0 {
+			c.mux.mpma = mpmaFor(c.opts.Bitrate, c.opts.BitrateMin)
+		}
 		if c.audio != nil {
 			c.mux.audioClock = int64(clockRate(c.audio, 16000))
 		}

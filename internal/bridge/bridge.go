@@ -5,6 +5,7 @@ package bridge
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -512,7 +513,8 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 		StreamName: streamName,
 		Channel:    i,
 		FPS:        info.FPS,
-		Bitrate:    channelBitrates[i],
+		Bitrate:    cmp.Or(info.Bitrate, channelBitrates[i]),
+		BitrateMin: info.BitrateMin,
 		OnKeyframe: func(wait time.Duration) {
 			log.Debug().Msgf("[bridge] %s: keyframe %d ms after Protect asked", channel, wait.Milliseconds())
 		},

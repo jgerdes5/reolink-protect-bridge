@@ -58,6 +58,7 @@ func fileHeader(audio bool) []byte {
 // for concurrent use; the Consumer serialises calls.
 type muxer struct {
 	audioClock int64         // trailer clock of AAC tags: the sample rate
+	mpma       amfObject     // onMpma body; nil = the fixed one
 	start      time.Time     // wall-clock time of the first keyframe
 	stamp      time.Time     // wall-clock time of the tags being built now
 	last       time.Duration // latest position written, so tags never go back
@@ -71,14 +72,37 @@ type sentTag struct {
 	at           time.Time
 }
 
-// sentAt is when the trailer with these ticks of clock was written.
+// sentAt is when the trailer Protect echoes was written: the one with these
+// ticks of this clock, or, for a probe in another unit (Protect also probes
+// in milliseconds, clock 1000), the tag at that time, to within one tick of
+// the coarser clock.
 func (m *muxer) sentAt(clock, t int64) (time.Time, bool) {
+	if clock <= 0 {
+		return time.Time{}, false
+	}
 	for _, s := range m.sent {
 		if s.clock == clock && s.ticks == t && !s.at.IsZero() {
 			return s.at, true
 		}
 	}
-	return time.Time{}, false
+	target := time.Duration(t/clock)*time.Second + time.Duration(t%clock*int64(time.Second)/clock)
+	var best time.Time
+	bestDiff := time.Duration(-1)
+	for _, s := range m.sent {
+		if s.at.IsZero() || s.clock <= 0 {
+			continue
+		}
+		pos := time.Duration(s.ticks/s.clock)*time.Second + time.Duration(s.ticks%s.clock*int64(time.Second)/s.clock)
+		diff := pos - target
+		if diff < 0 {
+			diff = -diff
+		}
+		tick := time.Second / time.Duration(min(clock, s.clock))
+		if diff <= tick && (bestDiff < 0 || diff < bestDiff) {
+			best, bestDiff = s.at, diff
+		}
+	}
+	return best, bestDiff >= 0
 }
 
 func newMuxer(now time.Time) *muxer {
@@ -143,7 +167,11 @@ func (m *muxer) appendTag(b []byte, tagType byte, at time.Duration, parts ...[]b
 // trailer) starts at 0, which keeps trailer = streamClockBase + tag time as on
 // a camera.
 func (m *muxer) appendSync(b []byte, at time.Duration, now time.Time) []byte {
-	b = m.appendTag(b, tagScript, at, scriptData("onMpma", mpma))
+	mp := m.mpma
+	if mp == nil {
+		mp = mpma
+	}
+	b = m.appendTag(b, tagScript, at, scriptData("onMpma", mp))
 
 	sync := amfObject{
 		{"streamClock", int64(flvTime(at))},
@@ -153,7 +181,26 @@ func (m *muxer) appendSync(b []byte, at time.Duration, now time.Time) []byte {
 	return m.appendTag(b, tagScript, at, scriptData("onClockSync", sync))
 }
 
-// mpma is the fixed onMpma body clock_sync.py sends (bitrate hints).
+// mpmaFor is onMpma as a G4 Instant sends it (captured on Protect 7.3), for
+// a stream configured to bitrate bit/s that can go down to minimum: cs is the
+// configured cap (min 32000), m the encoder's adaptive target (cur) within
+// its range, sp the server/player limit, t the current target. Protect plans
+// live view and its bitrate requests (feedback type 0) from these.
+func mpmaFor(bitrate, minimum int) amfObject {
+	if minimum <= 0 || minimum > bitrate {
+		minimum = bitrate / 5
+	}
+	return amfObject{
+		{"cs", amfObject{{"cur", bitrate}, {"max", bitrate}, {"min", 32000}}},
+		{"m", amfObject{{"cur", bitrate}, {"max", bitrate}, {"min", minimum}}},
+		{"r", 0},
+		{"sp", amfObject{{"cur", bitrate}, {"max", bitrate}, {"min", 0}}},
+		{"t", float64(bitrate)},
+	}
+}
+
+// mpma is the fixed onMpma body clock_sync.py sends (bitrate hints), used
+// when the stream's bitrate is unknown.
 var mpma = amfObject{
 	{"cs", amfObject{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
 	{"m", amfObject{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},

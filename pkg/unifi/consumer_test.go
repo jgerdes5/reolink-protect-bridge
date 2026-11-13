@@ -486,6 +486,15 @@ func TestConsumerRTT(t *testing.T) {
 	require.Equal(t, float64(250), m["rttMillis"])
 	require.Equal(t, float64(0), m["encDelay"])
 
+	// Protect's millisecond probe ("webd", clock 1000) for the same frame
+	webd := []byte{'w', 'e', 'b', 'd', 0, 0, 0x03, 0xe8}
+	webd = binary.BigEndian.AppendUint64(webd, 2000)
+	before = len(out.Bytes())
+	c.RTT(webd)
+	items, err = amf.NewReader(parseUniFi(t, out.Bytes()[before:])[0].payload).ReadItems()
+	require.NoError(t, err)
+	require.Equal(t, float64(250), items[1].(map[string]any)["rttMillis"])
+
 	// a trailer we never sent, or a garbage time: -1
 	for _, v := range []uint64{10 * 90000, 1 << 63} {
 		binary.BigEndian.PutUint64(probe[8:], v)

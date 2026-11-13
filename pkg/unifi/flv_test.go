@@ -142,3 +142,15 @@ func TestFirmwareVersion(t *testing.T) {
 		require.Equal(t, want, firmwareVersion(uri), uri)
 	}
 }
+
+// onMpma as a G4 Instant sends it, with the stream's real bitrate.
+func TestMpmaFor(t *testing.T) {
+	require.Equal(t, amfObject{
+		{"cs", amfObject{{"cur", 6144000}, {"max", 6144000}, {"min", 32000}}},
+		{"m", amfObject{{"cur", 6144000}, {"max", 6144000}, {"min", 1024000}}},
+		{"r", 0},
+		{"sp", amfObject{{"cur", 6144000}, {"max", 6144000}, {"min", 0}}},
+		{"t", 6144000.0},
+	}, mpmaFor(6144000, 1024000))
+	require.Equal(t, 100000, mpmaFor(500000, 0)[1].Value.(amfObject)[2].Value) // unknown minimum: a fifth
+}
