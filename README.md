@@ -1,141 +1,143 @@
 # Reolink Protect Bridge
 
-Reolink Protect Bridge makes a **Reolink video doorbell** appear in **UniFi
-Protect** as a native UniFi doorbell. Protect adopts it like its own hardware:
-live view, 24/7 recording, the timeline, ring notifications with the call
-screen, talkback, and person/vehicle/animal detections all work. It does this
-without ONVIF or a third-party camera entry.
+Use a Reolink video doorbell in UniFi Protect as if it were a UniFi doorbell.
 
-It is a single program with a small web page for setup. It connects to the
-doorbell over Reolink's own protocol (Baichuan, TCP 9000) and to Protect over
-UniFi's camera protocol (`ubnt_avclient`). Video and audio are passed through
-without transcoding.
+The bridge sits between the doorbell and your UniFi console. Protect sees a
+regular G4 Doorbell: you get live view, recording, ring notifications with
+the call screen, talkback and person/vehicle/animal detections, all in the
+Protect app. No ONVIF, no third-party camera entry.
 
-Tested with the Reolink Video Doorbell WiFi (D340W, firmware v3.0.0.4662) and
-UniFi Protect 7.3.74. Other Reolink doorbells that speak Baichuan are likely to
-work.
+> **Status:** early. Tested with one Reolink Video Doorbell WiFi (D340W) and
+> UniFi Protect 7.3.74. Expect rough edges and please open an issue if
+> something doesn't work for you.
 
-> Not affiliated with, endorsed by or supported by Ubiquiti or Reolink.
+## Features
 
-## What works
+- Shows up in Protect as a native doorbell (G4 Doorbell, or G5 Pro if you prefer)
+- Live view and 24/7 recording in high and low quality, with audio
+- Ring button: notification, call screen and ring in the timeline
+- Two-way audio from the Protect app
+- Motion and smart detections (person, vehicle, animal) from the doorbell's
+  own AI, with real bounding boxes, thumbnails, zones, line crossing and
+  loitering
+- Camera settings in Protect are applied to the doorbell: picture, night
+  vision, HDR, mirror/flip, status light, volumes, detection zones and
+  sensitivity
+- Small web page for setup, with automatic discovery of the doorbell and the
+  console
+- Runs as a Home Assistant add-on, in Docker or as a plain Linux service
 
-| In Protect | From the doorbell |
-|---|---|
-| Camera adopted as **G4 Doorbell** (or G5 Pro), doorbell flag | own UniFi identity: generated MAC and certificate |
-| Live view and recording in three qualities | main stream (e.g. 2560×1920, 20 fps) → High; sub stream → Medium and Low |
-| Audio | the doorbell's AAC stream |
-| **Ring**: notification, call screen, ring in the timeline | button press (Baichuan push event), sent as a real G4 Doorbell sends it |
-| Motion events | Reolink motion detection |
-| **Smart detections** person / vehicle / animal, with thumbnails and crops | the doorbell's own AI, with its **real detection boxes** |
-| Smart-detect zones, line crossing | evaluated by the bridge against the doorbell's boxes |
-| **Talkback** from the app and the web UI | Protect's AAC audio is decoded and played on the doorbell's speaker |
-| Snapshots | keyframe from the main stream |
-| Settings: picture (brightness, contrast, …), mirror/flip, night vision, HDR, status light, speaker and ring volume, smart-detection types, sensitivity, motion and smart zones | written to the doorbell (zones become its detection areas) |
-| Fast quality switching | keyframe interval set to 0.5 s |
+## How it works
 
-Not supported: H.265 streams (set the doorbell to H.264), a display (the Reolink
-has none), Protect's custom ringtones (the doorbell plays its own tone), face and
-licence-plate recognition, HomeKit's Opus talkback.
+```
+Reolink doorbell  ── Baichuan (TCP 9000) ──▶  Reolink Protect Bridge  ── UniFi camera protocol ──▶  UniFi Protect
+                  ◀── settings, talkback ──                           ◀── settings, talkback ──
+```
 
-## Install
+The bridge talks to the doorbell over Reolink's own protocol (Baichuan) for
+video, events and settings. Towards Protect it behaves like a UniFi camera: it
+connects to the console, gets adopted, and streams the doorbell's video in the
+format Protect expects. Video and audio are passed through, not re-encoded, so
+it runs fine on small hardware.
 
-You need a Linux host on the same network as the doorbell and the UniFi console,
-with a **fixed IP address**. Protect sends snapshot requests and talkback audio
-to the camera's address. ffmpeg must be installed (the install methods below
-handle it). One instance serves one doorbell.
+## Requirements
 
-### Proxmox LXC or any Debian/Ubuntu machine
+- A Reolink doorbell set to **H.264** (H.265 isn't supported yet)
+- UniFi Protect 7.x on a UniFi console (Dream Machine, Cloud Key, UNVR, ...)
+- A host on the same network that runs 24/7 and has a **fixed IP address**.
+  Protect sends snapshot requests and talkback audio to that address.
+- A local UniFi OS user without SSO or 2FA, with full Protect access (used to
+  adopt the camera)
+
+## Installation
+
+### Home Assistant add-on
+
+1. In Home Assistant go to **Settings → Add-ons → Add-on Store**, open the
+   menu (⋮) → **Repositories** and add
+   `https://github.com/jgerdes5/reolink-protect-bridge`.
+2. Install **Reolink Protect Bridge** and start it.
+3. Open **Reolink Protect** in the sidebar.
+
+The camera uses the Home Assistant host's IP in Protect. Bonus: the UniFi
+Protect integration in Home Assistant picks the doorbell up like any other
+Protect doorbell, so you can use its ring and detection events in automations.
+
+### Docker
+
+```sh
+git clone https://github.com/jgerdes5/reolink-protect-bridge
+cd reolink-protect-bridge
+mkdir data && sudo chown 10001 data
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+The container needs host networking (talkback arrives on UDP 7004 and
+discovery uses broadcasts). The web page is on port 8080.
+
+### Linux / Proxmox LXC
+
+On Debian or Ubuntu:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/jgerdes5/reolink-protect-bridge/main/deploy/install.sh
 sudo sh install.sh
 ```
 
-While the repository is private, the script needs a GitHub token with read
-access (`GITHUB_TOKEN=... sh install.sh`); see the guide below.
-
-The script installs ffmpeg, a service user and a systemd service, and prints the
-web page address. A step-by-step guide for a new Proxmox container, with every
-value explained, is in [deploy/proxmox.md](deploy/proxmox.md). To build from a
-checkout instead: `sudo sh deploy/install.sh --from-source .`.
-
-### Home Assistant add-on
-
-On Home Assistant OS or Supervised: Settings → Add-ons → Add-on Store → ⋮ →
-Repositories → add `https://github.com/jgerdes5/reolink-protect-bridge`, then
-install **Reolink Protect Bridge** and open it from the sidebar. The camera gets
-the Home Assistant host's IP address in Protect (keep it fixed), and the web
-page is served only through Home Assistant, which handles the login. The
-UniFi Protect integration in Home Assistant then shows the doorbell with its
-ring and detection events. Details: [add-on documentation](reolink_protect_bridge/DOCS.md).
-(Home Assistant can only add the repository once it is public.)
-
-### Docker
-
-```sh
-mkdir data && sudo chown 10001 data
-docker compose -f deploy/docker-compose.yml up -d
-```
-
-The container needs `network_mode: host`. Protect sends talkback to UDP port
-7004 on the camera's address, and discovery uses broadcasts.
-
-### Binary
-
-Release binaries for linux/amd64, arm64 and armv7 are attached to each
-[release](https://github.com/jgerdes5/reolink-protect-bridge/releases). Run
-`reolink-protect-bridge -data /var/lib/reolink-protect-bridge`.
+This installs the binary, ffmpeg and a systemd service. For a new Proxmox
+container there's a step-by-step guide in [deploy/proxmox.md](deploy/proxmox.md).
+Prebuilt binaries are also attached to each
+[release](https://github.com/jgerdes5/reolink-protect-bridge/releases).
 
 ## Setup
 
-1. Open `http://<host>:8080` and create the admin password.
-2. **Connections**:
-   - **Doorbell**: its address (or *Find doorbells*), user and password.
-   - **Protect**: the console's address (or *Find Protect console*) and a
-     **local** UniFi OS user (no SSO, no MFA) with full Protect management,
-     used to fetch adoption tokens. Alternatively paste an adoption token from
-     `https://<console>/proxy/protect/api/cameras/manage-payload`.
-3. Save. The camera appears in Protect and adopts itself.
-4. In Protect, open the camera's settings: switch on motion detection and set
-   up the smart detections and zones you want. The bridge passes them to the
-   doorbell.
+1. Open the web page at `http://<host>:8080` and set an admin password. In
+   Home Assistant just open it from the sidebar, no extra password needed.
+2. Under **Connections**, enter the doorbell (or use *Find doorbells*) and your
+   UniFi console with the local user.
+3. Save. After a few seconds the doorbell shows up in Protect and adopts itself.
+4. In Protect, turn on motion detection and set up smart detections and zones
+   as you like.
 
-If the doorbell is already in Protect as an ONVIF/third-party camera, remove
-that entry, otherwise it shows up twice. The **Options** page has the camera
-name, the identity (G4 Doorbell or G5 Pro), the ring method, and switches for
-events, talkback, applying Protect's settings and fast quality switching.
-Changing the identity makes Protect see a new camera.
+If the doorbell is already in Protect via ONVIF, remove that entry first,
+otherwise you'll have it twice.
 
-Network ports:
+The **Options** page lets you change the camera name, the model it shows up as,
+and turn talkback, events, settings sync and fast quality switching on or off.
+
+## Ports
 
 | From | To | Port |
 |---|---|---|
-| bridge | doorbell | TCP 9000 |
-| bridge | console | TCP 7442 (camera protocol), 443 (login), 7444 (snapshot upload), 7550 (video) |
-| console | bridge | UDP 7004 (talkback) |
-| you | bridge | TCP 8080 (web page) |
+| Bridge | Doorbell | TCP 9000 |
+| Bridge | UniFi console | TCP 443, 7442, 7444, 7550 |
+| UniFi console | Bridge | UDP 7004 (talkback) |
+| Browser | Bridge | TCP 8080 (web page, not used with the add-on) |
 
-## How it works
+## Limitations
 
-- **Doorbell side.** Two Baichuan streams (main, sub) feed Protect's video
-  channels. A third Baichuan connection subscribes to push events (motion, AI
-  type, button). Settings are short GET → modify → SET exchanges that keep every
-  element the bridge does not change. The doorbell's AI boxes travel inside the
-  video frames (compressed TLV records in the frame header) and are decoded from
-  the main stream.
-- **Protect side.** The bridge connects to `wss://<console>:7442` as a camera,
-  identifies itself with a G4 Doorbell's system id and firmware version, and
-  pushes each video channel to Protect as UniFi's FLV variant. It follows the
-  firmware's own writer (`libubnt_encoder`): 64-bit clock trailers, `onMpma` and
-  `onClockSync` before every keyframe, the camera's `onMetaData`, and frame-rate
-  timing in the H.264 SPS.
-- **Events** are sent as a camera sends them: `EventAnalytics` for motion,
-  `EventSmartDetect` with descriptors, zone and line status for detections, and
-  `MCUEventMessage` / `EventRingButtonPressed` for the ring, which Protect's `ds`
-  service turns into a ring event. A fallback rings through Protect's HTTP API
-  (Options → ring method).
-- **Talkback**: Protect sends ADTS AAC (22.05 kHz) over UDP. ffmpeg decodes it,
-  and the PCM goes to the doorbell's talk channel (ADPCM).
+- One doorbell per bridge (and per IP address, because of the fixed talkback
+  port)
+- H.264 only
+- No custom ringtones from Protect; the doorbell keeps its own chime
+- Face and licence plate recognition don't work, the doorbell's AI doesn't
+  provide them
+- Switching between high and low quality in Protect can show a short black
+  frame. Real UniFi cameras produce a keyframe on demand, Reolink can't. The
+  *fast quality switching* option halves the delay.
+- Protect updates can change the protocol at any time
+
+## Troubleshooting
+
+- **Camera doesn't appear in Protect:** check the log on the status page.
+  "protect login: HTTP 401/403" means the user is wrong, uses SSO/2FA or lacks
+  Protect access.
+- **Live view stutters or recordings have gaps:** make sure the host's clock is
+  synced (NTP).
+- **No talkback:** check that UDP 7004 from the console to the bridge isn't
+  blocked. Remove and re-adopt the camera if Protect doesn't offer the speaker.
+- **Ring arrives in the log but not in Protect:** switch the ring method to
+  "Protect API" under Options.
 
 ## Development
 
@@ -144,50 +146,38 @@ go test -race ./...
 go build ./cmd/reolink-protect-bridge
 ```
 
-The code layout:
+The video and audio handling uses [go2rtc](https://github.com/AlexxIT/go2rtc)
+as a regular Go dependency, so it can be updated on its own. Most of the
+interesting code is in `internal/bridge`, `pkg/unifi` and `pkg/baichuan`.
 
-| Path | Contents |
-|---|---|
-| `cmd/reolink-protect-bridge` | main |
-| `internal/bridge` | one doorbell as a Protect camera: streams, events, talkback, settings, box geometry |
-| `internal/source` | keeps a Reolink stream connected and re-attaches consumers after reconnects |
-| `internal/web`, `internal/config`, `internal/discovery`, `internal/logbuf` | web page and API, config store, discovery, log buffer |
-| `pkg/unifi` | UniFi camera protocol: adoption, FLV, events, settings, talkback |
-| `pkg/baichuan`, `pkg/reolink` | Reolink Baichuan protocol and stream producer |
+## Credits
 
-The media primitives (H.264/AAC parsing, RTP tracks, FLV and AMF) come from
-[go2rtc](https://github.com/AlexxIT/go2rtc) as an ordinary Go module dependency
-(`github.com/AlexxIT/go2rtc`, public `pkg/` packages only), so it can be updated
-independently with `go get github.com/AlexxIT/go2rtc@<version>`.
+This project wouldn't exist without:
 
-## Credits and sources
+- [go2rtc](https://github.com/AlexxIT/go2rtc) by Alexey Khit, used for the media handling
+- [fzurita/go2rtc](https://github.com/fzurita/go2rtc) by Francisco Zurita, whose
+  Baichuan and Reolink code is the base of `pkg/baichuan` and `pkg/reolink`
+- [unifi-cam-proxy](https://github.com/keshavdv/unifi-cam-proxy) by Keshav Varma
+  and the Reolink fork
+  [reolink-unifi-protect](https://github.com/woutersteegers/reolink-unifi-protect),
+  which figured out much of how Protect talks to cameras
+- [reolink_aio](https://github.com/starkillerOG/reolink_aio), a great reference
+  for the Baichuan protocol
+- [pyunifiwire](https://github.com/rjmotion/pyunifiwire) and
+  [unifi-guides](https://github.com/rjmotion/unifi-guides), for their
+  measurements of the UniFi protocol
 
-This project builds on the work of others:
+Licence details for the included code are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-- **[go2rtc](https://github.com/AlexxIT/go2rtc)** by Alexey Khit (MIT): the media
-  library this app depends on.
-- **[fzurita/go2rtc](https://github.com/fzurita/go2rtc)** by Francisco Zurita
-  (MIT): the Baichuan client and Reolink producer in `pkg/baichuan` and
-  `pkg/reolink`, carried over from his go2rtc fork and extended here (settings
-  commands, push events, AI boxes).
-- **[unifi-cam-proxy](https://github.com/keshavdv/unifi-cam-proxy)** by Keshav
-  Varma (MIT), and its Reolink fork
-  **[woutersteegers/reolink-unifi-protect](https://github.com/woutersteegers/reolink-unifi-protect)**:
-  the reference for the camera protocol as Protect 7.x accepts it, event
-  payloads, the AI box format (via
-  [nodelink-js](https://github.com/nodelink-js)) and many hard-won notes.
-- **[reolink_aio](https://github.com/starkillerOG/reolink_aio)** by starkillerOG
-  (MIT): reference for Baichuan commands, push events and settings.
-- **[pyunifiwire](https://github.com/rjmotion/pyunifiwire)** /
-  [unifi-guides](https://github.com/rjmotion/unifi-guides) (MIT): measurements of
-  the UniFi wire protocol on real hardware.
-- Static analysis of publicly downloadable firmware and software: UniFi G4/G5
-  camera firmware 5.5.45 (`ubnt_avclient`, `ubnt_ctlserver`, `libubnt_encoder`,
-  `ubnt_talkback`), UniFi Protect 7.3.74 and its `ds` 7.3.6 package, and the
-  Reolink D340W firmware (`netserver`, `libnetpublic`, `device`). None of it is
-  redistributed here.
+## Disclaimer
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the licence texts.
+This project is not affiliated with or endorsed by Ubiquiti or Reolink. All
+product names are trademarks of their respective owners. Use it at your own
+risk.
+
+Most of the code and documentation in this repository was written with the
+help of AI (Claude by Anthropic).
 
 ## License
 
