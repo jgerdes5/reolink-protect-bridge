@@ -255,3 +255,24 @@ func TestOsdName(t *testing.T) {
 	require.Equal(t, "", osdName("🔔"))
 	require.Len(t, osdName("abcdefghijklmnopqrstuvwxyz0123456789"), 31)
 }
+
+const dayNightXML = `<body><DayNightThreshold version="1.1"><channelId>0</channelId><threshold>default</threshold><stat>day</stat><thresholdval><min>0</min><max>100</max><cur>50</cur></thresholdval></DayNightThreshold></body>`
+
+func TestDayNightChange(t *testing.T) {
+	custom := func(v int) *unifi.ISP {
+		return &unifi.ISP{IrLedMode: sptr("auto"), IrLedLevel: iptr(255), IcrSwitchMode: sptr("lux"), IcrCustomValue: iptr(v)}
+	}
+	b := parse(t, dayNightXML)
+	require.True(t, dayNightChange(custom(5))(b)) // 10 lux of 30
+	require.Equal(t, "custom", b.Value("DayNightThreshold/threshold"))
+	require.Equal(t, "33", b.Value("DayNightThreshold/thresholdval/cur"))
+	require.False(t, dayNightChange(custom(5))(b))
+
+	require.True(t, dayNightChange(custom(10))(b))
+	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur"))
+
+	auto := &unifi.ISP{IrLedMode: sptr("auto"), IrLedLevel: iptr(255), IcrSwitchMode: sptr("sensitivity")}
+	require.True(t, dayNightChange(auto)(b))
+	require.Equal(t, "default", b.Value("DayNightThreshold/threshold"))
+	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur")) // kept for the next custom
+}

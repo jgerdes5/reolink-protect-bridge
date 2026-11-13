@@ -25,7 +25,7 @@ Protect app. No ONVIF, no third-party camera entry.
 - These Protect settings are applied to the doorbell:
   - brightness, contrast, saturation, hue, sharpness, noise reduction
   - mirror and flip, anti-flicker (50/60 Hz)
-  - night vision (auto, on, off) and HDR
+  - night vision (auto, on, off, custom threshold) and HDR
   - status light (the doorbell's button light)
   - speaker volume and ring volume (0 mutes the doorbell's own chime)
   - privacy masks (up to 4 rectangles)
@@ -58,7 +58,6 @@ Protect app. No ONVIF, no third-party camera entry.
   - microphone volume
   - lens distortion correction
   - date format of the overlay
-  - the custom night vision threshold (treated as "auto")
 - Privacy masks are rectangles only; free-form shapes are turned into their
   bounding box
 - Displays and LCD messages: the Reolink doorbell has no display

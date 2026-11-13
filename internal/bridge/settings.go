@@ -148,6 +148,11 @@ func (s *settings) flush() {
 	if isp != nil || sound != nil {
 		s.run(ctx, "leds", func() error { return applyLeds(ctx, client, ch, isp, sound) })
 	}
+	if isp != nil && isp.NightVision() != "" {
+		s.run(ctx, "day/night threshold", func() error {
+			return update(ctx, client, baichuan.MsgDayNightGet, baichuan.MsgDayNightSet, ch, nil, dayNightChange(isp), "night vision threshold")
+		})
+	}
 	if sound != nil {
 		s.run(ctx, "audio", func() error { return applyAudio(ctx, client, ch, sound) })
 	}
@@ -743,4 +748,32 @@ func osdName(s string) string {
 		out = strings.TrimSpace(out[:31])
 	}
 	return out
+}
+
+// Protect's custom night vision: a slider 0-10, meaning "switch to night below
+// this many lux" (swai: 0 = <1 lux, then 1, 3, 5, 7, 10, 12, 15, 20, 25, 30).
+var nightLux = [11]float64{0.5, 1, 3, 5, 7, 10, 12, 15, 20, 25, 30}
+
+// dayNightChange sets the doorbell's day/night switch threshold (296/297
+// DayNightThreshold): with Protect's custom night vision a custom value, the
+// lux level mapped proportionally onto the doorbell's range (higher switches
+// to night earlier); otherwise the doorbell's default threshold.
+func dayNightChange(isp *unifi.ISP) func(*baichuan.Node) bool {
+	return func(b *baichuan.Node) bool {
+		if isp.NightVision() != "custom" || isp.IcrCustomValue == nil {
+			return b.Set("DayNightThreshold/threshold", "default")
+		}
+		lo, err1 := strconv.Atoi(b.Value("DayNightThreshold/thresholdval/min"))
+		hi, err2 := strconv.Atoi(b.Value("DayNightThreshold/thresholdval/max"))
+		if err1 != nil || err2 != nil || hi <= lo {
+			lo, hi = 0, 100
+		}
+		lux := nightLux[clamp(*isp.IcrCustomValue, 0, 10)]
+		cur := lo + int(math.Round(lux/nightLux[10]*float64(hi-lo)))
+		changed := b.Set("DayNightThreshold/threshold", "custom")
+		if b.Set("DayNightThreshold/thresholdval/cur", strconv.Itoa(cur)) {
+			changed = true
+		}
+		return changed
+	}
 }
