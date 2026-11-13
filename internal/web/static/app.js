@@ -266,6 +266,7 @@ async function loadConfig() {
   o.events.checked = config.camera.events;
   o.talkback.checked = config.camera.talkback;
   o.settings.checked = config.camera.settings;
+  o.fastSwitch.checked = config.camera.fastSwitch;
   $("#opt-mac").textContent = config.identity.mac.replace(/(..)(?!$)/g, "$1:");
 }
 
@@ -332,6 +333,7 @@ $("#opt-form").addEventListener("submit", async ev => {
       events: f.events.checked,
       talkback: f.talkback.checked,
       settings: f.settings.checked,
+      fastSwitch: f.fastSwitch.checked,
     },
   };
   await busy($("button[type=submit]", f), async () => {

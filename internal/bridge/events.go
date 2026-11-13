@@ -173,6 +173,7 @@ func (r *recordingSink) SmartDetect(object string) {
 		}
 		r.b.addEvent(object)
 	}
+	r.b.tracker.setObject(object)
 	r.eventSink.SmartDetect(object)
 }
 

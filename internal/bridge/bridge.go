@@ -23,6 +23,7 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/magic"
 	"github.com/AlexxIT/go2rtc/pkg/mjpeg"
 	"github.com/jgerdes5/reolink-protect-bridge/internal/source"
+	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/reolink"
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 	"github.com/rs/zerolog"
@@ -61,6 +62,10 @@ type Options struct {
 	Events   bool
 	Talkback bool
 	Settings bool // apply Protect's camera settings to the doorbell
+	// FastSwitch sets the doorbell's keyframe interval to 0.5 s (else 1 s):
+	// Protect starts a viewer only at a keyframe, and unlike a UniFi camera the
+	// Reolink can't make one on request.
+	FastSwitch bool
 
 	FFmpeg string // ffmpeg binary, default "ffmpeg"
 }
@@ -78,6 +83,7 @@ type Bridge struct {
 	events   []Event // newest last, for the status page
 	eventsUp bool
 	settings *settings
+	tracker  *tracker
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -127,6 +133,7 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		opts:    opts,
 		runners: map[string]*runner{},
 		snapSem: make(chan struct{}, 1),
+		tracker: newTracker(),
 	}
 	b.main = source.New("main", b.dialer("main"), logger)
 	b.sub = source.New("sub", b.dialer("sub"), logger)
@@ -208,6 +215,9 @@ func (b *Bridge) dialer(stream string) source.DialFunc {
 		if err != nil {
 			return nil, err
 		}
+		if stream == "main" { // the doorbell sends its AI boxes on the main stream only
+			client.OnAIBoxes = b.onBoxes
+		}
 		if err = client.Probe(); err != nil {
 			_ = client.Close()
 			return nil, err
@@ -229,6 +239,7 @@ func (b *Bridge) Run(ctx context.Context) {
 	if b.opts.Events {
 		go b.runEvents(ctx)
 	}
+	go b.applyKeyframes(ctx)
 	b.proto.Run(ctx)
 
 	for _, name := range channelNames {
@@ -500,6 +511,12 @@ func (b *Bridge) captureSnapshot(ctx context.Context) ([]byte, error) {
 		"-i", "-", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", "-f", "mjpeg", "-")
 	cmd.Stdin = bytes.NewReader(frame)
 	return cmd.Output()
+}
+
+// onBoxes passes the doorbell's AI boxes, with zone and line results, to
+// Protect (reading goroutine of the main stream: must be quick).
+func (b *Bridge) onBoxes(boxes []baichuan.AIBox, w, h int) {
+	b.proto.Detections(b.tracker.frame(boxes, w, h))
 }
 
 // addEvent records an event for the status page.

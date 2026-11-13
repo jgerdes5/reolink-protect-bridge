@@ -229,6 +229,11 @@ func (c *Client) processPacket(packet baichuan.MediaPacket, videoCount, audioCou
 
 	switch packet.Kind {
 	case baichuan.MediaPacketIFrame, baichuan.MediaPacketPFrame:
+		if c.OnAIBoxes != nil && len(packet.Extra) > 8 {
+			if boxes, w, h := baichuan.DecodeAIBoxes(packet.Extra); len(boxes) > 0 {
+				c.OnAIBoxes(boxes, w, h)
+			}
+		}
 		if !c.videoEnabled {
 			return
 		}

@@ -19,6 +19,11 @@ import (
 var Log = zerolog.Nop()
 
 type Client struct {
+	// OnAIBoxes, if set, receives the camera's AI object rectangles carried in
+	// video frames (main stream), see baichuan.DecodeAIBoxes. Called on the
+	// reading goroutine: must not block.
+	OnAIBoxes func(boxes []baichuan.AIBox, width, height int)
+
 	core.Listener
 
 	url     *url.URL

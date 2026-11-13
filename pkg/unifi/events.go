@@ -42,6 +42,7 @@ type event struct {
 
 	done chan struct{} // closed when shot is set (or the capture failed)
 	shot *eventShot
+	box  []int // [x, y, w, h] 0-1000: the object, for the crop; smartBox without real boxes
 }
 
 // eventShot is an event's snapshot, published by closing event.done.
@@ -62,6 +63,9 @@ type events struct {
 	files    map[string]eventFile // announced snapshots Protect fetches by name
 	lastSnap []byte               // newest event snapshot, for motionSnapshot requests
 	lastRing time.Time
+	det      Detection // latest real boxes
+	detAt    time.Time
+	movingAt time.Time // last "moving" frame
 
 	queueOnce sync.Once
 	queue     chan func() // event frames, sent in order by one goroutine
@@ -110,7 +114,7 @@ func (c *Camera) Motion(on bool) {
 
 	switch {
 	case on && c.ev.motion == nil:
-		e := c.newEvent("")
+		e := c.newEvent("", nil)
 		c.ev.motion = e
 		c.Log.Debug().Msgf("[unifi] %s: motion start (event %d)", c.Name, e.id)
 		p := c.motionPayload(e, "start")
@@ -132,12 +136,20 @@ func (c *Camera) SmartDetect(object string) {
 
 	switch {
 	case object != "" && c.ev.smart == nil:
-		e := c.newEvent(object)
+		det, fresh := c.freshDetection()
+		box := smartBox
+		if fresh {
+			box = det.Boxes[largest(det.Boxes)].coord()
+		}
+		e := c.newEvent(object, box)
 		c.ev.smart = e
 		c.Log.Info().Msgf("[unifi] %s: %s detected (event %d)", c.Name, object, e.id)
 		p := c.motionPayload(e, "enter")
 		p["objectTypes"] = []string{object}
 		p["zonesStatus"] = zones("enter")
+		if fresh && len(det.Zones) > 0 {
+			p["zonesStatus"] = zoneStatuses(det.Zones)
+		}
 		p["smartDetectSnapshot"] = ""
 		p["smartDetectSnapshotFullFoV"] = ""
 		p["smartDetectSnapshotFullFoVHeight"] = 0
@@ -145,6 +157,9 @@ func (c *Camera) SmartDetect(object string) {
 		p["smartDetectSnapshots"] = []any{}
 		p["displayTimeoutMSec"] = smartDisplayMs
 		p["descriptors"] = []any{descriptor(e)}
+		if fresh {
+			p["descriptors"] = descriptors(e, det.Boxes)
+		}
 		c.enqueue(func() { c.sendEvent("EventSmartDetect", p) })
 	case object == "" && c.ev.smart != nil:
 		e := c.ev.smart
@@ -207,7 +222,7 @@ func (c *Camera) ring(ctx context.Context) error {
 
 // newEvent opens an event and captures its snapshot in the background. Must be
 // called with c.ev.mu held.
-func (c *Camera) newEvent(object string) *event {
+func (c *Camera) newEvent(object string, box []int) *event {
 	if !c.ev.seeded {
 		// not 0 after every restart, which could collide with ids Protect still
 		// holds; below 10^7 so trackerID stays far inside 32 bits
@@ -217,7 +232,7 @@ func (c *Camera) newEvent(object string) *event {
 	if c.ev.nextID >= 40_000_000 {
 		c.ev.nextID = 0
 	}
-	e := &event{id: c.ev.nextID, start: time.Now(), object: object, done: make(chan struct{})}
+	e := &event{id: c.ev.nextID, start: time.Now(), object: object, done: make(chan struct{}), box: box}
 	c.ev.nextID++
 	go c.captureEvent(e)
 	return e
@@ -240,7 +255,7 @@ func (c *Camera) captureEvent(e *event) {
 		shot.snapW, shot.snapH = cfg.Width, cfg.Height
 	}
 	if e.object != "" {
-		shot.crop, shot.side = squareCrop(snap, smartBox)
+		shot.crop, shot.side = squareCrop(snap, e.box)
 	}
 	e.shot = shot // published by close(e.done)
 
@@ -300,8 +315,8 @@ func (c *Camera) finishEvent(e *event, fn string) {
 			"clockBestMonotonic":        c.uptime().Milliseconds(),
 			"clockBestWall":             e.start.UnixMilli(),
 			"confidenceLevel":           90,
-			"coord":                     smartBox,
-			"framingRect":               smartBox,
+			"coord":                     e.box,
+			"framingRect":               e.box,
 			"reVerifyEligible":          false,
 			"smartDetectSnapshot":       name,
 			"smartDetectSnapshotHeight": shot.side,
@@ -356,7 +371,7 @@ func descriptor(e *event) map[string]any {
 		"trackerID":         trackerID(e),
 		"name":              "",
 		"confidenceLevel":   90,
-		"coord":             smartBox,
+		"coord":             e.box,
 		"objectType":        e.object,
 		"zones":             []int{1},
 		"lines":             []any{},

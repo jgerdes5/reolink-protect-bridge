@@ -147,9 +147,14 @@ func parseVideoFrame(buf []byte, iframe bool) (MediaPacket, int, bool, error) {
 		t := time.Unix(ts, 0).UTC()
 		unixTime = &t
 	}
+	var extra []byte // carries the camera's AI boxes, see aibox.go
+	if additionalHeaderSize > 0 {
+		extra = append([]byte(nil), buf[pos:pos+additionalHeaderSize]...)
+	}
 	pos += additionalHeaderSize
 
 	packet := MediaPacket{
+		Extra:              extra,
 		Kind:               MediaPacketPFrame,
 		Codec:              codec,
 		Data:               append([]byte(nil), buf[pos:pos+payloadSize]...),

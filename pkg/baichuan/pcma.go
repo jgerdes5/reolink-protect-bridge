@@ -9,8 +9,6 @@ func EncodePCMA(pcm []int16) []byte {
 	return out
 }
 
-
-
 func linearToALaw(pcm int16) byte {
 	var sign int16
 	var exponent int16
@@ -44,4 +42,3 @@ func linearToALaw(pcm int16) byte {
 
 	return alaw ^ 0x55
 }
-

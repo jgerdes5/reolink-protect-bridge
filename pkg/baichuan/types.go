@@ -217,6 +217,7 @@ func (k MediaPacketKind) String() string {
 // MediaPacket is one parsed bcmedia unit.
 type MediaPacket struct {
 	Kind               MediaPacketKind
+	Extra              []byte // video: the frame's additional header (AI boxes)
 	Codec              string
 	Data               []byte
 	TimestampMicrosecs uint32

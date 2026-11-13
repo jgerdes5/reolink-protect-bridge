@@ -271,3 +271,43 @@ func TestEventOrder(t *testing.T) {
 	next, _ := strconv.Atoi(id)
 	require.Equal(t, []string{"start" + id, "stop" + id, "start" + strconv.Itoa(next+1)}, edges)
 }
+
+func TestSmartDetectRealBoxes(t *testing.T) {
+	cam := &Camera{Snapshot: func(context.Context) ([]byte, error) { return testJPEG(t, 1000, 1000), nil }}
+	_, conn := connectedCamera(t, cam)
+
+	person := Box{X: 600, Y: 200, W: 100, H: 400, Confidence: 77, TrackerID: 9, Zones: []int{3}}
+	cam.Detections(Detection{Boxes: []Box{person}, Zones: map[int]string{3: "enter"}})
+	cam.SmartDetect("person")
+
+	_, enter := readMsg(t, conn)
+	require.Equal(t, "enter", enter["edgeType"])
+	desc := enter["descriptors"].([]any)[0].(map[string]any)
+	require.Equal(t, []any{600.0, 200.0, 100.0, 400.0}, desc["coord"])
+	require.Equal(t, 9.0, desc["trackerID"])
+	require.Equal(t, 77.0, desc["confidenceLevel"])
+	require.Equal(t, []any{3.0}, desc["zones"])
+	require.Contains(t, enter["zonesStatus"], "3")
+
+	// a later frame: the box moved and crossed line 5
+	person.X, person.Lines = 650, []int{5}
+	cam.Detections(Detection{
+		Boxes: []Box{person},
+		Zones: map[int]string{3: "moving"},
+		Lines: map[int]LineCross{5: {A2B: 1, A2BAdd: 1, Status: "enter"}},
+	})
+	msg, moving := readMsg(t, conn)
+	require.Equal(t, "EventSmartDetect", msg.FunctionName)
+	require.Equal(t, "moving", moving["edgeType"])
+	require.Equal(t, enter["eventId"], moving["eventId"])
+	line := moving["linesStatus"].(map[string]any)["5"].(map[string]any)
+	require.Equal(t, "enter", line["status"])
+	require.Equal(t, 1.0, line["person"].(map[string]any)["crosslineA2B"])
+	require.Equal(t, []any{5.0}, moving["descriptors"].([]any)[0].(map[string]any)["lines"])
+
+	// the crop follows the real box
+	cam.SmartDetect("")
+	_, leave := readMsg(t, conn)
+	shot := leave["smartDetectSnapshots"].([]any)[0].(map[string]any)
+	require.Equal(t, []any{650.0, 200.0, 100.0, 400.0}, shot["coord"])
+}
