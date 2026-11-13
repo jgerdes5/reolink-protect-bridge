@@ -35,6 +35,7 @@ type settings struct {
 	sound    *unifi.SoundLed
 	smart    *unifi.SmartDetect
 	motion   *unifi.Motion
+	osd      *unifi.OSD
 	timer    *time.Timer
 	enabled  map[string]bool // Protect object types with smart detection on; nil = all
 }
@@ -79,6 +80,13 @@ func (s *settings) SmartDetect(v unifi.SmartDetect) {
 	s.schedule()
 }
 
+func (s *settings) OSD(v unifi.OSD) {
+	s.mu.Lock()
+	s.osd = &v
+	s.mu.Unlock()
+	s.schedule()
+}
+
 func (s *settings) Motion(v unifi.Motion) {
 	s.mu.Lock()
 	s.motion = &v
@@ -110,15 +118,15 @@ func (s *settings) schedule() {
 // flush applies everything pending.
 func (s *settings) flush() {
 	s.mu.Lock()
-	isp, sound, smart, motion := s.isp, s.sound, s.smart, s.motion
-	s.isp, s.sound, s.smart, s.motion = nil, nil, nil, nil
+	isp, sound, smart, motion, osd := s.isp, s.sound, s.smart, s.motion, s.osd
+	s.isp, s.sound, s.smart, s.motion, s.osd = nil, nil, nil, nil, nil
 	hdr := ""
 	if s.hdrDirty && s.hdrOn != nil {
 		hdr = hdrSwitch(*s.hdrOn, s.hdrMode)
 	}
 	s.hdrDirty = false
 	s.mu.Unlock()
-	if isp == nil && hdr == "" && sound == nil && smart == nil && motion == nil {
+	if isp == nil && hdr == "" && sound == nil && smart == nil && motion == nil && osd == nil {
 		return
 	}
 
@@ -148,6 +156,17 @@ func (s *settings) flush() {
 	}
 	if motion != nil {
 		s.run(ctx, "motion", func() error { return applyMotion(ctx, client, ch, motion) })
+	}
+	if isp != nil && isp.Masks != nil {
+		masks := isp.Masks
+		s.run(ctx, "privacy masks", func() error {
+			return update(ctx, client, msgMaskGet, msgMaskSet, ch, nil, maskChange(masks), "privacy masks")
+		})
+	}
+	if osd != nil {
+		s.run(ctx, "overlay", func() error {
+			return update(ctx, client, msgOsdGet, msgOsdSet, ch, nil, osdChange(*osd), "overlay")
+		})
 	}
 }
 
@@ -556,4 +575,172 @@ func gopChange(fast bool) func(*baichuan.Node) bool {
 		}
 		return changed
 	}
+}
+
+// Privacy masks (Shelter, 52/53) and the overlay (OSD, 44/45), from the D340W
+// firmware (nets_shelter_get / nets_pic_shelter_x2s, nets_osd_*).
+const (
+	msgOsdGet  = 44
+	msgOsdSet  = 45
+	msgMaskGet = 52
+	msgMaskSet = 53
+
+	maxMasks = 4 // the firmware stores at most four rectangles
+)
+
+// maskChange replaces the doorbell's privacy masks with Protect's zones, each
+// as its bounding box. Coordinates are packed (value << 16) | reference size,
+// with Protect's 0-1000 space as the reference; ids not used are deleted.
+func maskChange(masks []unifi.Mask) func(*baichuan.Node) bool {
+	return func(b *baichuan.Node) bool {
+		root := b.Find("Shelter")
+		if root == nil {
+			return false
+		}
+		list := root.Find("shelterList")
+		if list == nil {
+			list = &baichuan.Node{Name: "shelterList"}
+			root.Children = append(root.Children, list)
+		}
+
+		want := map[int][4]int{}
+		for i, m := range masks {
+			if i >= maxMasks {
+				log.Warn().Msgf("[settings] the doorbell takes %d privacy zones, zone %d ignored", maxMasks, m.ID)
+				continue
+			}
+			want[i] = boundingBox(m.Coord)
+		}
+		have := map[int][4]int{}
+		for _, e := range list.Children {
+			id, _ := strconv.Atoi(e.Value("id"))
+			have[id] = [4]int{unpack(e.Value("topLeftX")), unpack(e.Value("topLeftY")), unpack(e.Value("width")), unpack(e.Value("height"))}
+		}
+
+		enable := boolStr(len(want) > 0)
+		if root.Value("enable") == enable && len(want) == len(have) && sameMasks(want, have) {
+			return false
+		}
+
+		root.Set("enable", enable)
+		list.Children = nil
+		for id := 0; id < maxMasks; id++ {
+			r, ok := want[id]
+			e := &baichuan.Node{Name: "Shelter", Children: []*baichuan.Node{
+				{Name: "id", Text: strconv.Itoa(id)},
+				{Name: "enable", Text: boolStr(ok)}, // 0 deletes the entry
+			}}
+			if ok {
+				e.Children = append(e.Children,
+					&baichuan.Node{Name: "topLeftX", Text: strconv.Itoa(pack(r[0]))},
+					&baichuan.Node{Name: "topLeftY", Text: strconv.Itoa(pack(r[1]))},
+					&baichuan.Node{Name: "width", Text: strconv.Itoa(pack(r[2]))},
+					&baichuan.Node{Name: "height", Text: strconv.Itoa(pack(r[3]))},
+				)
+			}
+			list.Children = append(list.Children, e)
+		}
+		return true
+	}
+}
+
+const maskRef = 1000 // reference size: Protect's coordinate space
+
+func pack(v int) int { return v<<16 | maskRef }
+
+// unpack returns a value in the 0-1000 space from a packed coordinate.
+func unpack(s string) int {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return -1
+	}
+	ref := v & 0xffff
+	if ref == 0 {
+		return -1
+	}
+	return (v >> 16) * maskRef / ref
+}
+
+func sameMasks(a, b map[int][4]int) bool {
+	for id, r := range a {
+		o, ok := b[id]
+		if !ok {
+			return false
+		}
+		for i := range r {
+			if abs(r[i]-o[i]) > 1 { // rounding from another reference size
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// boundingBox returns [x, y, w, h] of a polygon in 0-1000.
+func boundingBox(coord []float64) [4]int {
+	minX, minY, maxX, maxY := 1000.0, 1000.0, 0.0, 0.0
+	for i := 0; i+1 < len(coord); i += 2 {
+		minX, maxX = math.Min(minX, coord[i]), math.Max(maxX, coord[i])
+		minY, maxY = math.Min(minY, coord[i+1]), math.Max(maxY, coord[i+1])
+	}
+	x0, y0 := clamp(int(math.Floor(minX)), 0, 1000), clamp(int(math.Floor(minY)), 0, 1000)
+	x1, y1 := clamp(int(math.Ceil(maxX)), 0, 1000), clamp(int(math.Ceil(maxY)), 0, 1000)
+	return [4]int{x0, y0, max(x1-x0, 0), max(y1-y0, 0)}
+}
+
+// OSD anchor codes (topLeftX, topLeftY) of the six Reolink positions.
+var osdAnchors = map[string][2]string{
+	"topLeft": {"1", "1"}, "topMiddle": {"65537", "1"}, "topRight": {"65536", "1"},
+	"bottomLeft": {"1", "65536"}, "bottomMiddle": {"65537", "65536"}, "bottomRight": {"65536", "65536"},
+}
+
+// osdChange sets the name, date and logo overlay. The name goes to Protect's
+// position and the date to the other vertical edge (Reolink places them
+// separately, Protect has one position).
+func osdChange(o unifi.OSD) func(*baichuan.Node) bool {
+	return func(b *baichuan.Node) bool {
+		changed := false
+		set := func(path, v string) {
+			if b.Set(path, v) {
+				changed = true
+			}
+		}
+		if name := osdName(o.Name); name != "" {
+			set("OsdChannelName/name", name)
+			set("OsdChannelName/enable", "1")
+		} else {
+			set("OsdChannelName/enable", "0")
+		}
+		set("OsdDatetime/enable", boolStr(o.Date))
+		set("OsdChannelName/enWatermark", boolStr(o.Logo))
+		if pos, ok := osdAnchors[o.Location]; ok {
+			set("OsdChannelName/topLeftX", pos[0])
+			set("OsdChannelName/topLeftY", pos[1])
+			date := "65536" // bottom
+			if pos[1] == "65536" {
+				date = "1" // top
+			}
+			set("OsdDatetime/topLeftX", pos[0])
+			set("OsdDatetime/topLeftY", date)
+		}
+		return changed
+	}
+}
+
+// osdName makes a camera name acceptable to the doorbell: ASCII only (umlauts
+// transliterated), none of $&*/:;<>?\`| , at most 31 bytes.
+func osdName(s string) string {
+	s = strings.NewReplacer("ä", "ae", "ö", "oe", "ü", "ue", "Ä", "Ae", "Ö", "Oe", "Ü", "Ue", "ß", "ss").Replace(s)
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r >= 0x7f || strings.ContainsRune("$&*/:;<>?\\`|", r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	if len(out) > 31 {
+		out = strings.TrimSpace(out[:31])
+	}
+	return out
 }

@@ -63,15 +63,18 @@ func (c *Camera) featureFlags() map[string]any {
 		"motionDetect": []string{"enhanced"}, // ChangeSmartMotionSettings
 		// what Reolink's AI detects; lines and loitering are evaluated by the
 		// bridge from the doorbell's boxes (lineCrossing* unlock the line tab)
-		"smartDetect":          []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"},
-		"videoCodecs":          []string{"h264"},
-		"audioCodecs":          []string{"aac"},
-		"audioStyle":           []string{"nature"},
-		"horizontalFlip":       true, // mirror
-		"verticalFlip":         true, // flip
-		"hdr":                  true, // HDR selector -> Reolink hdrSwitch
-		"truedaynight":         true, // night vision block -> day/night mode and IR LEDs
-		"ledStatus":            true, // status light -> doorbell button light; PATCH ledSettings fails without it
+		"smartDetect":    []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"},
+		"videoCodecs":    []string{"h264"},
+		"audioCodecs":    []string{"aac"},
+		"audioStyle":     []string{"nature"},
+		"horizontalFlip": true, // mirror
+		"verticalFlip":   true, // flip
+		"hdr":            true, // HDR selector -> Reolink hdrSwitch
+		"truedaynight":   true, // night vision block -> day/night mode and IR LEDs
+		"ledStatus":      true, // status light -> doorbell button light; PATCH ledSettings fails without it
+		// privacy zones -> the doorbell's masks: at most 4 rectangles (Shelter)
+		"privacyMask":          true,
+		"privacyMasks":         map[string]any{"maxZones": 4, "rectangleOnly": true},
 		"squareEventThumbnail": true,
 		"maxScaleDownLevel":    2,
 		"downScaleResolutions": [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},

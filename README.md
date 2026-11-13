@@ -21,8 +21,8 @@ Protect app. No ONVIF, no third-party camera entry.
   own AI, with real bounding boxes, thumbnails, zones, line crossing and
   loitering
 - Camera settings in Protect are applied to the doorbell: picture, night
-  vision, HDR, mirror/flip, status light, volumes, detection zones and
-  sensitivity
+  vision, HDR, mirror/flip, status light, volumes, privacy masks (up to 4
+  rectangles), name/date overlay, detection zones and sensitivity
 - Small web page for setup, with automatic discovery of the doorbell and the
   console
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
@@ -120,6 +120,8 @@ and turn talkback, events, settings sync and fast quality switching on or off.
   port)
 - H.264 only
 - No custom ringtones from Protect; the doorbell keeps its own chime
+- Some Protect settings have no counterpart on the doorbell (video bitrate and
+  frame rate, IR intensity, status sounds, lens correction) and are ignored
 - Face and licence plate recognition don't work, the doorbell's AI doesn't
   provide them
 - Switching between high and low quality in Protect can show a short black

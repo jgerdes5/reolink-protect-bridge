@@ -17,6 +17,7 @@ type settingsLog struct {
 	smart []SmartDetect
 	mot   []Motion
 	hdr   []bool
+	osd   []OSD
 }
 
 func (s *settingsLog) ISP(v ISP)           { s.mu.Lock(); s.isp = append(s.isp, v); s.mu.Unlock() }
@@ -28,6 +29,7 @@ func (s *settingsLog) SmartDetect(v SmartDetect) {
 }
 func (s *settingsLog) Motion(v Motion) { s.mu.Lock(); s.mot = append(s.mot, v); s.mu.Unlock() }
 func (s *settingsLog) HDR(on bool)     { s.mu.Lock(); s.hdr = append(s.hdr, on); s.mu.Unlock() }
+func (s *settingsLog) OSD(v OSD)       { s.mu.Lock(); s.osd = append(s.osd, v); s.mu.Unlock() }
 
 func TestApplySettings(t *testing.T) {
 	log := &settingsLog{}
@@ -41,6 +43,9 @@ func TestApplySettings(t *testing.T) {
 		"lines":{"2":{"coord":[200,600,800,600,500,0],"crosslineDirection":"A2B","objectTypes":["person"]}}}`))
 	cam.applySetting("ChangeSmartMotionSettings", json.RawMessage(`{"enable":true,"zones":{"1":{"coord":[0,0,500,0,500,500,0,500],"level":30}}}`))
 	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"video1":{"fps":20}}}`)) // no HDR in it
+	cam.applySetting("ChangeOsdSettings", json.RawMessage(`{"_1":{"tag":"Haustür","enableDate":1,"enableLogo":0},"_2":{},"overlayLocation":"bottomRight"}`))
+	cam.applySetting("ChangeIspSettings", json.RawMessage(`{"masks":{"color":[0,128,128],"7":{"update":true,"coord":[0,0,100,0,100,100,0,100]},"3":{"coord":[1,2,3,4,5,6]}}}`))
+	cam.applySetting("ChangeIspSettings", json.RawMessage(`{"masks":{"0":null}}`))
 	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"hdrMode":1}}`))
 
 	require.Eventually(t, func() bool {
@@ -51,7 +56,11 @@ func TestApplySettings(t *testing.T) {
 
 	log.mu.Lock()
 	defer log.mu.Unlock()
-	require.Len(t, log.isp, 1)
+	require.Len(t, log.isp, 3)
+	require.Nil(t, log.isp[0].Masks) // no masks sent: leave the doorbell's alone
+	require.Equal(t, []Mask{{ID: 3, Coord: []float64{1, 2, 3, 4, 5, 6}}, {ID: 7, Coord: []float64{0, 0, 100, 0, 100, 100, 0, 100}}}, log.isp[1].Masks)
+	require.Equal(t, []Mask{}, log.isp[2].Masks) // none: clear the doorbell's
+	require.Equal(t, []OSD{{Name: "Haustür", Date: true, Location: "bottomRight"}}, log.osd)
 	require.Equal(t, 70, *log.isp[0].Brightness)
 	require.Nil(t, log.isp[0].Contrast)
 	require.Equal(t, "off", log.isp[0].NightVision())

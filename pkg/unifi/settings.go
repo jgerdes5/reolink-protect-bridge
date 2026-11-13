@@ -2,6 +2,8 @@ package unifi
 
 import (
 	"encoding/json"
+	"sort"
+	"strconv"
 )
 
 // Settings receives the camera settings Protect 7.3 sends, so they can be
@@ -14,6 +16,22 @@ type Settings interface {
 	SmartDetect(SmartDetect)
 	Motion(Motion)
 	HDR(on bool)
+	OSD(OSD)
+}
+
+// OSD is ChangeOsdSettings for cameras without the overlay API
+// (updateOsdSettings): the same entry for each of the four streams.
+type OSD struct {
+	Name     string // "" = name off
+	Date     bool
+	Logo     bool
+	Location string // topLeft | topMiddle | topRight | bottomLeft | bottomMiddle | bottomRight
+}
+
+// Mask is a privacy zone: a polygon [x1,y1,...] in 0-1000.
+type Mask struct {
+	ID    int
+	Coord []float64
 }
 
 // ISP is ChangeIspSettings in Protect's wire names (updateIspSettings). Fields
@@ -34,6 +52,32 @@ type ISP struct {
 	IcrSwitchMode  *string `json:"icrSwitchMode"`  // sensitivity | lux
 	IcrCustomValue *int    `json:"icrCustomValue"` // 0-10 with lux
 	HdrMode        *string `json:"hdrMode"`        // normal | superHdr
+	// Masks are the privacy zones; nil if Protect did not send masks.
+	Masks []Mask `json:"-"`
+}
+
+// parseMasks reads ChangeIspSettings.masks: {"0": null} for none, else
+// {"color": [...], "<zoneId>": {"update": bool, "coord": [...]}}.
+func parseMasks(raw json.RawMessage) []Mask {
+	var m map[string]json.RawMessage
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	masks := []Mask{}
+	for k, v := range m {
+		id, err := strconv.Atoi(k)
+		if err != nil {
+			continue // "color"
+		}
+		var z struct {
+			Coord []float64 `json:"coord"`
+		}
+		if json.Unmarshal(v, &z) == nil && len(z.Coord) >= 6 {
+			masks = append(masks, Mask{ID: id, Coord: z.Coord})
+		}
+	}
+	sort.Slice(masks, func(i, j int) bool { return masks[i].ID < masks[j].ID })
+	return masks
 }
 
 // NightVision decodes Protect's IR fields into its UI setting: "auto", "on",
@@ -120,6 +164,12 @@ func (c *Camera) applySetting(fn string, payload json.RawMessage) {
 		if json.Unmarshal(payload, &v) != nil {
 			return
 		}
+		var raw struct {
+			Masks json.RawMessage `json:"masks"`
+		}
+		if json.Unmarshal(payload, &raw) == nil && len(raw.Masks) > 0 && string(raw.Masks) != "null" {
+			v.Masks = parseMasks(raw.Masks)
+		}
 		job = func() { c.Settings.ISP(v) }
 	case "ChangeSoundLedSettings":
 		var v SoundLed
@@ -139,6 +189,20 @@ func (c *Camera) applySetting(fn string, payload json.RawMessage) {
 			return
 		}
 		job = func() { c.Settings.Motion(v) }
+	case "ChangeOsdSettings":
+		var v struct {
+			Stream *struct {
+				Tag        string `json:"tag"`
+				EnableDate int    `json:"enableDate"`
+				EnableLogo int    `json:"enableLogo"`
+			} `json:"_1"`
+			Location string `json:"overlayLocation"`
+		}
+		if json.Unmarshal(payload, &v) != nil || v.Stream == nil {
+			return
+		}
+		osd := OSD{Name: v.Stream.Tag, Date: v.Stream.EnableDate != 0, Logo: v.Stream.EnableLogo != 0, Location: v.Location}
+		job = func() { c.Settings.OSD(osd) }
 	case "ChangeVideoSettings":
 		var v struct {
 			Video struct {

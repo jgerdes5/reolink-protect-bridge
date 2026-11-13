@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
@@ -177,4 +178,80 @@ func TestGopChange(t *testing.T) {
 	require.Equal(t, "20", b.Value("Compression/mainStream/gop/cur"))
 	require.Equal(t, "15", b.Value("Compression/subStream/gop/cur"))
 	require.False(t, gopChange(false)(b))
+}
+
+const shelterXML = `<body><Shelter version="1.1"><channelId>0</channelId><enable>1</enable><shelterList>
+<Shelter><id>0</id><enable>1</enable><layer>0</layer><color>0</color><topLeftX>6553600640</topLeftX><topLeftY>480</topLeftY><width>13107840</width><height>6553920</height></Shelter>
+</shelterList></Shelter></body>`
+
+func TestMaskChange(t *testing.T) {
+	b := parse(t, `<body><Shelter version="1.1"><channelId>0</channelId><enable>0</enable><shelterList></shelterList></Shelter></body>`)
+	masks := []unifi.Mask{
+		{ID: 5, Coord: []float64{100, 200, 300, 200, 300, 400, 100, 400}},
+		{ID: 9, Coord: []float64{0, 0, 250.00000000000003, 0, 250, 1000, 0, 1000}},
+	}
+	require.True(t, maskChange(masks)(b))
+	require.Equal(t, "1", b.Value("Shelter/enable"))
+	list := b.Find("Shelter/shelterList").Children
+	require.Len(t, list, 4) // ids 0-3: two rectangles, two deleted
+	first := list[0]
+	require.Equal(t, "0", first.Value("id"))
+	require.Equal(t, "1", first.Value("enable"))
+	require.Equal(t, strconv.Itoa(100<<16|1000), first.Value("topLeftX"))
+	require.Equal(t, strconv.Itoa(200<<16|1000), first.Value("width"))
+	require.Equal(t, strconv.Itoa(251<<16|1000), list[1].Value("width")) // float edge rounded outwards
+	require.Equal(t, "0", list[2].Value("enable"))
+	require.Nil(t, list[2].Find("topLeftX"))
+
+	// the doorbell now reports exactly these: nothing to write
+	b = parse(t, string(b.Marshal()))
+	for _, e := range b.Find("Shelter/shelterList").Children {
+		if e.Value("enable") == "0" {
+			b.Find("Shelter/shelterList").Children = b.Find("Shelter/shelterList").Children[:2]
+			break
+		}
+	}
+	require.False(t, maskChange(masks)(b))
+
+	// no zones in Protect: masks off and deleted
+	require.True(t, maskChange([]unifi.Mask{})(b))
+	require.Equal(t, "0", b.Value("Shelter/enable"))
+
+	// at most four
+	many := make([]unifi.Mask, 6)
+	for i := range many {
+		many[i] = unifi.Mask{ID: i, Coord: []float64{0, 0, 10, 0, 10, 10}}
+	}
+	b = parse(t, shelterXML)
+	require.True(t, maskChange(many)(b))
+	require.Len(t, b.Find("Shelter/shelterList").Children, 4)
+}
+
+const osdXML = `<body><OsdDatetime version="1.1"><channelId>0</channelId><enable>1</enable><topLeftX>1</topLeftX><topLeftY>65536</topLeftY><width>0</width><height>0</height><language>English</language></OsdDatetime>
+<OsdChannelName version="1.1"><channelId>0</channelId><name>Doorbell</name><enable>1</enable><topLeftX>1</topLeftX><topLeftY>1</topLeftY><enWatermark>1</enWatermark><enBgcolor>0</enBgcolor></OsdChannelName></body>`
+
+func TestOsdChange(t *testing.T) {
+	b := parse(t, osdXML)
+	require.True(t, osdChange(unifi.OSD{Name: "Haustür <Süd>", Date: false, Logo: false, Location: "topRight"})(b))
+	require.Equal(t, "Haustuer Sued", b.Value("OsdChannelName/name"))
+	require.Equal(t, "1", b.Value("OsdChannelName/enable"))
+	require.Equal(t, "0", b.Value("OsdDatetime/enable"))
+	require.Equal(t, "0", b.Value("OsdChannelName/enWatermark"))
+	require.Equal(t, "65536", b.Value("OsdChannelName/topLeftX"))
+	require.Equal(t, "1", b.Value("OsdChannelName/topLeftY"))
+	require.Equal(t, "65536", b.Value("OsdDatetime/topLeftY")) // date at the other edge
+	require.Equal(t, "English", b.Value("OsdDatetime/language"))
+
+	// name off keeps the stored text
+	require.True(t, osdChange(unifi.OSD{Name: "", Date: true, Logo: true, Location: "topRight"})(b))
+	require.Equal(t, "0", b.Value("OsdChannelName/enable"))
+	require.Equal(t, "Haustuer Sued", b.Value("OsdChannelName/name"))
+}
+
+func TestOsdName(t *testing.T) {
+	require.Equal(t, "Front Door", osdName("  Front Door "))
+	require.Equal(t, "Strasse", osdName("Straße"))
+	require.Equal(t, "ab", osdName("a$&*/:;<>?\\`|b"))
+	require.Equal(t, "", osdName("🔔"))
+	require.Len(t, osdName("abcdefghijklmnopqrstuvwxyz0123456789"), 31)
 }
