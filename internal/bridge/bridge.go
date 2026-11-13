@@ -96,6 +96,11 @@ type Bridge struct {
 	tmu        sync.Mutex // transcodes; held while one starts
 	transcodes map[string]*sharedTranscode
 
+	omu     sync.Mutex             // Opus encoders (opus.go)
+	opus    map[string]*sharedOpus // per source
+	opusEnc string                 // ffmpeg's Opus encoder, once known
+	opusErr error                  // no Opus encoder: don't ask again
+
 	snapSem  chan struct{}
 	snap     []byte
 	snapErr  error
@@ -521,6 +526,16 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 		return err
 	}
 	defer cons.Stop()
+
+	// Opus next to AAC, as Protect asks every camera for (opus.go); before
+	// the first keyframe, which carries its config
+	if _, audio := cons.TrackCodecs(); audio != nil && b.opts.FFmpeg != "" {
+		if release, err := b.opusFor(ctx, src, cons); err == nil {
+			cons.OnStop(release)
+		} else if !errors.Is(err, b.opusErrSnapshot()) {
+			log.Debug().Err(err).Msgf("[bridge] %s: no Opus audio", channel)
+		}
+	}
 
 	var d net.Dialer
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

@@ -35,6 +35,8 @@ type Consumer struct {
 	started   bool // first keyframe sent
 	vclock    trackClock
 	aclock    trackClock
+	oclock    trackClock    // Opus
+	opus      bool          // EnableOpus
 	vpos      time.Duration // timeline position of the last video frame
 	spsIn     []byte        // last SPS seen and its rewritten form (fixSPS)
 	spsOut    []byte
@@ -289,6 +291,9 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 		}
 		c.started = true
 		c.mux = newMuxer(now)
+		if c.audio != nil {
+			c.mux.audioClock = int64(clockRate(c.audio, 16000))
+		}
 		c.vclock = trackClock{rate: int64(clockRate(c.video, clockVideo))}
 		b = c.appendInit(b, pkt.Payload)
 	}
@@ -382,8 +387,37 @@ func (c *Consumer) appendInit(b []byte, keyframe []byte) []byte {
 	if len(audioConfig) > 0 {
 		b = c.mux.appendTag(b, tagAudio, 0, append([]byte{aacFlags, 0}, audioConfig...))
 	}
+	if c.opus {
+		b = c.mux.appendTag(b, tagOpus, 0, opusConfig)
+	}
 
 	return b
+}
+
+// EnableOpus makes the stream carry Opus audio (WriteOpus) next to AAC. It
+// must be called before the first keyframe, which carries the Opus config.
+func (c *Consumer) EnableOpus() {
+	c.mu.Lock()
+	c.opus = true
+	c.mu.Unlock()
+}
+
+// WriteOpus sends one Opus packet. pos is its position in 48 kHz samples
+// (continuous, any start), captured the wall-clock time its sound was
+// recorded (the source audio's arrival), so it lines up with the AAC track
+// although the encoder delays it.
+func (c *Consumer) WriteOpus(pkt []byte, pos uint32, captured time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.wr == nil || c.closed || !c.started || !c.opus || len(pkt) == 0 {
+		return
+	}
+	if c.oclock.rate == 0 {
+		c.oclock = trackClock{rate: clockOpus}
+	}
+	at := c.oclock.next(pos, captured.Sub(c.mux.start))
+	c.mux.stamp = c.now()
+	c.write(c.mux.appendTag(c.buf[:0], tagOpus, at, pkt))
 }
 
 // fixSPS returns the SPS as sent to Protect: pixel format fixed and frame-rate

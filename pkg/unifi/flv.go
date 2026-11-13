@@ -14,9 +14,16 @@ import (
 //   - the header flags byte has bit 2 set for "extended format" on top of the
 //     usual audio (4) and video (1) bits, so 7 for a stream with audio;
 //   - every tag (after its PreviousTagSize) is followed by a 16-byte trailer:
-//     a 32-bit clock rate (90000 for video tags, 11025 for all others), 32 zero
-//     bits, and the tag's time as a 64-bit count of that clock's ticks. The
-//     camera uses its capture clock, the same clock as the tag timestamp;
+//     a 32-bit clock rate, 32 zero bits, and the tag's time as a 64-bit count
+//     of that clock's ticks. The camera uses its capture clock, the same clock
+//     as the tag timestamp. Firmware 5.5.45 used 90000 for video and 11025 for
+//     everything else; a G4 Instant on Protect 7.3 (captured) uses 90000 for
+//     video and script tags, the sample rate (16000) for AAC and 48000 for
+//     Opus, which is what is written here;
+//   - besides AAC audio (tag 8) it sends Opus (tag 10) when Protect asks for
+//     it (avSerializer parameters withOpus): a config tag cf 00 03 02, then
+//     one raw Opus packet (20 ms) per tag. Protect's live view (WebRTC) plays
+//     Opus, so without it Protect has to convert the audio first;
 //   - before every video keyframe an onMpma tag (bitrate envelope) and an
 //     onClockSync tag map the stream clock to wall-clock time.
 //
@@ -28,10 +35,14 @@ const (
 	tagAudio  = flv.TagAudio
 	tagVideo  = flv.TagVideo
 	tagScript = flv.TagData
+	tagOpus   = 10 // UniFi extension
 
 	clockVideo = 90000
-	clockOther = 11025
+	clockOpus  = 48000
 )
+
+// opusConfig is the payload of the Opus config tag, as a G4 Instant sends it.
+var opusConfig = []byte{0xcf, 0x00, 0x03, 0x02}
 
 // fileHeader is the FLV header with UniFi's flags, plus PreviousTagSize0.
 func fileHeader(audio bool) []byte {
@@ -46,11 +57,12 @@ func fileHeader(audio bool) []byte {
 // stream timeline, which starts at 0 with the first keyframe. It is not safe
 // for concurrent use; the Consumer serialises calls.
 type muxer struct {
-	start time.Time     // wall-clock time of the first keyframe
-	stamp time.Time     // wall-clock time of the tags being built now
-	last  time.Duration // latest position written, so tags never go back
-	sent  [64]sentTag   // recent trailers, to answer RTT probes
-	next  int
+	audioClock int64         // trailer clock of AAC tags: the sample rate
+	start      time.Time     // wall-clock time of the first keyframe
+	stamp      time.Time     // wall-clock time of the tags being built now
+	last       time.Duration // latest position written, so tags never go back
+	sent       [64]sentTag   // recent trailers, to answer RTT probes
+	next       int
 }
 
 // sentTag is a trailer as written and when: Protect's RTT probe echoes one.
@@ -78,14 +90,24 @@ func ticks(at time.Duration, clock int64) int64 {
 	return int64(at/time.Second)*clock + int64(at%time.Second)*clock/int64(time.Second)
 }
 
-func appendTrailer(b []byte, video bool, at time.Duration) []byte {
-	clock := int64(clockOther)
-	if video {
-		clock = clockVideo
-	}
+func appendTrailer(b []byte, clock int64, at time.Duration) []byte {
 	b = binary.BigEndian.AppendUint32(b, uint32(clock))
 	b = append(b, 0, 0, 0, 0)
 	return binary.BigEndian.AppendUint64(b, uint64(max(ticks(at, clock), 0)))
+}
+
+// clock is a tag type's trailer clock.
+func (m *muxer) clock(tagType byte) int64 {
+	switch tagType {
+	case tagAudio:
+		if m.audioClock > 0 {
+			return m.audioClock
+		}
+		return 16000
+	case tagOpus:
+		return clockOpus
+	}
+	return clockVideo
 }
 
 // flvTime is the 32-bit millisecond FLV timestamp of a timeline position.
@@ -108,15 +130,11 @@ func (m *muxer) appendTag(b []byte, tagType byte, at time.Duration, parts ...[]b
 		b = append(b, p...)
 	}
 	b = binary.BigEndian.AppendUint32(b, uint32(11+size))
-	video := tagType == tagVideo
-	clock := int64(clockOther)
-	if video {
-		clock = clockVideo
-	}
+	clock := m.clock(tagType)
 	m.sent[m.next] = sentTag{clock: clock, ticks: max(ticks(at, clock), 0), at: m.stamp}
 	m.next = (m.next + 1) % len(m.sent)
 	m.last = max(m.last, at)
-	return appendTrailer(b, video, at)
+	return appendTrailer(b, clock, at)
 }
 
 // appendSync appends onMpma and onClockSync, which a real camera sends right

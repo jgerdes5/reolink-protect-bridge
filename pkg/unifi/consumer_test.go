@@ -128,8 +128,8 @@ func TestConsumerOutput(t *testing.T) {
 	require.Equal(t, uint32(40), tags[6].ts)
 	require.Equal(t, []byte{0xAF, 1, 0xbe, 0xef}, tags[6].payload)
 	require.Equal(t, uint32(104), tags[7].ts)
-	require.Equal(t, uint64(40*clockOther/1000), binary.BigEndian.Uint64(tags[6].trailer[8:]))
-	require.Equal(t, uint64(104*clockOther/1000), binary.BigEndian.Uint64(tags[7].trailer[8:]))
+	require.Equal(t, uint64(40*16), binary.BigEndian.Uint64(tags[6].trailer[8:])) // 16 kHz trailer
+	require.Equal(t, uint64(104*16), binary.BigEndian.Uint64(tags[7].trailer[8:]))
 
 	// inter frame 4500 ticks = 50 ms later, trailer from the stream clock, not
 	// from the arrival time (40 ms)

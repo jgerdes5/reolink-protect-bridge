@@ -78,10 +78,16 @@ Reolink doorbell  ── Baichuan (TCP 9000) ──▶  Reolink Protect Bridge  
 The bridge talks to the doorbell over Reolink's own protocol (Baichuan) for
 video, events and settings. Towards Protect it behaves like a UniFi camera: it
 connects to the console, gets adopted, and streams the doorbell's video in the
-format Protect expects. Video and audio are normally passed through, not
-re-encoded, so it runs fine on small hardware. The one exception: when Protect
-wants H.265 (enhanced encoding), the low-quality stream, which the doorbell
-only sends as H.264, is converted to H.265 with ffmpeg. That costs some CPU.
+format Protect expects. Video and the doorbell's AAC audio are passed through,
+not re-encoded, so it runs fine on small hardware. Two things go through
+ffmpeg:
+
+- Opus audio. UniFi cameras send Opus next to AAC because Protect's live view
+  plays Opus; the doorbell can only do AAC, so ffmpeg converts it (a percent or
+  two of one CPU core). Without it Protect likely has to convert the audio
+  itself whenever live view opens, which would delay the picture.
+- When Protect wants H.265 (enhanced encoding), the low-quality stream, which
+  the doorbell only sends as H.264, is converted to H.265. That costs some CPU.
 
 The bridge opens the connections to Protect itself. Snapshot requests and
 settings come back over that connection, so the only thing Protect sends to

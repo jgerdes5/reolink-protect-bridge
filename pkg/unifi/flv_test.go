@@ -47,14 +47,14 @@ func TestScriptDataECMAArray(t *testing.T) {
 // The trailer as ContainerFLV::AddExtendedTimestamps writes it: 32-bit clock
 // rate, 32 zero bits, 64-bit ticks of that clock.
 func TestTrailer(t *testing.T) {
-	video := appendTrailer(nil, true, 1500*time.Millisecond)
+	video := appendTrailer(nil, clockVideo, 1500*time.Millisecond)
 	require.Equal(t, "00015f90"+"00000000"+"0000000000020f58", hex.EncodeToString(video)) // 135000
 
-	other := appendTrailer(nil, false, 2*time.Second)
-	require.Equal(t, "00002b11"+"00000000"+"0000000000005622", hex.EncodeToString(other)) // 22050
+	audio := appendTrailer(nil, 16000, 2*time.Second)
+	require.Equal(t, "00003e80"+"00000000"+"0000000000007d00", hex.EncodeToString(audio)) // 32000
 
 	// 14 h at 90 kHz no longer fits 32 bits; clock_sync.py's uint32 wrapped here
-	long := appendTrailer(nil, true, 14*time.Hour)
+	long := appendTrailer(nil, clockVideo, 14*time.Hour)
 	require.Equal(t, uint64(14*3600*90000), binary.BigEndian.Uint64(long[8:]))
 
 	// 30 days without overflowing the conversion
@@ -92,7 +92,8 @@ func TestMuxerClockSync(t *testing.T) {
 	now := time.Unix(1700000000, 123e6)
 	m := newMuxer(now)
 
-	// onMpma, then onClockSync, both at the keyframe's time with 11025 Hz trailers
+	// onMpma, then onClockSync, both at the keyframe's time with 90 kHz
+	// trailers (as a G4 Instant sends script tags)
 	tags := parseUniFi(t, m.appendSync(nil, 5*time.Second, now))
 	require.Len(t, tags, 2)
 
@@ -107,8 +108,17 @@ func TestMuxerClockSync(t *testing.T) {
 		{"streamClockBase", 0},
 		{"wallClock", float64(1700000000123)},
 	})), hex.EncodeToString(tags[1].payload))
-	require.Equal(t, "00002b11", hex.EncodeToString(tags[1].trailer[:4]))
-	require.Equal(t, uint64(5*clockOther), binary.BigEndian.Uint64(tags[1].trailer[8:]))
+	require.Equal(t, "00015f90", hex.EncodeToString(tags[1].trailer[:4]))
+	require.Equal(t, uint64(5*clockVideo), binary.BigEndian.Uint64(tags[1].trailer[8:]))
+
+	// AAC at its sample rate, Opus at 48 kHz
+	m.audioClock = 16000
+	tags = parseUniFi(t, m.appendTag(nil, tagAudio, time.Second, []byte{1}))
+	require.Equal(t, "00003e80", hex.EncodeToString(tags[0].trailer[:4]))
+	tags = parseUniFi(t, m.appendTag(nil, tagOpus, time.Second, []byte{0xb8}))
+	require.Equal(t, byte(tagOpus), tags[0].typ)
+	require.Equal(t, "0000bb80", hex.EncodeToString(tags[0].trailer[:4]))
+	require.Equal(t, uint64(48000), binary.BigEndian.Uint64(tags[0].trailer[8:]))
 
 	// a video tag: 90 kHz trailer on the same timeline
 	tags = parseUniFi(t, m.appendTag(nil, tagVideo, 5*time.Second, []byte{3}))
