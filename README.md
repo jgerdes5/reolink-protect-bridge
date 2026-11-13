@@ -47,9 +47,12 @@ handle it). One instance serves one doorbell.
 ### Proxmox LXC or any Debian/Ubuntu machine
 
 ```sh
-curl -fsSLO https://github.com/jgerdes5/reolink-protect-bridge/releases/latest/download/install.sh
+curl -fsSLO https://raw.githubusercontent.com/jgerdes5/reolink-protect-bridge/main/deploy/install.sh
 sudo sh install.sh
 ```
+
+While the repository is private, the script needs a GitHub token with read
+access (`GITHUB_TOKEN=... sh install.sh`); see the guide below.
 
 The script installs ffmpeg, a service user and a systemd service, and prints the
 web page address. A step-by-step guide for a new Proxmox container, with every
