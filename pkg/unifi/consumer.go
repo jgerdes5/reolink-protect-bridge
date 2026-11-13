@@ -1,0 +1,503 @@
+package unifi
+
+import (
+	"bytes"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"io"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/AlexxIT/go2rtc/pkg/aac"
+	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/pion/rtp"
+)
+
+// Consumer streams one go2rtc stream (H.264 + optional AAC) to Protect as UniFi
+// FLV. The bytes are only re-wrapped: no decoding, no encoding.
+type Consumer struct {
+	core.Connection
+
+	opts StreamOptions
+
+	mu      sync.Mutex
+	wr      io.Writer
+	mux     *muxer
+	video   *core.Codec
+	audio   *core.Codec
+	started bool // first keyframe sent
+	vclock  trackClock
+	aclock  trackClock
+	vpos    time.Duration // timeline position of the last video frame
+	spsIn   []byte        // last SPS seen and its rewritten form (fixSPS)
+	spsOut  []byte
+	buf     []byte // reused output buffer
+	frames  int    // video frames received, also before streaming
+	width   int    // from the SPS, once known
+	height  int
+	closed  bool
+	err     error
+	done    chan struct{}
+	closer  atomic.Value // io.Closer of the writer, closed by Stop without c.mu
+
+	now func() time.Time // for tests
+}
+
+// writeTimeout bounds a single write to Protect, so a stalled NVR socket ends
+// the stream instead of blocking the sender forever.
+const writeTimeout = 10 * time.Second
+
+// maxBuffer is the largest output buffer kept for reuse (a 5 MP keyframe is
+// a few hundred KB).
+const maxBuffer = 2 << 20
+
+// StreamOptions describe the channel a Consumer feeds.
+type StreamOptions struct {
+	StreamName string // from Protect's ChangeVideoSettings
+	Channel    int    // 0, 1, 2 for video1, video2, video3
+	FPS        int
+	Bitrate    int // advertised bandwidth in bit/s
+	// FFmpegMetadata sends ffmpeg's onMetaData (ECMA array) like unifi-cam-proxy,
+	// instead of the AMF object a real camera sends.
+	FFmpegMetadata bool
+}
+
+// streamIDs are the streamId values of video1..video3 (see ChangeVideoSettings).
+var streamIDs = [3]int{1, 2, 4}
+
+func NewConsumer(opts StreamOptions) *Consumer {
+	medias := []*core.Media{
+		{
+			Kind:      core.KindVideo,
+			Direction: core.DirectionSendonly,
+			Codecs:    []*core.Codec{{Name: core.CodecH264}},
+		},
+		{
+			Kind:      core.KindAudio,
+			Direction: core.DirectionSendonly,
+			Codecs:    []*core.Codec{{Name: core.CodecAAC}},
+		},
+	}
+	return &Consumer{
+		Connection: core.Connection{
+			ID:         core.NewID(),
+			FormatName: "unifi",
+			Protocol:   "tcp",
+			Medias:     medias,
+		},
+		opts: opts,
+		done: make(chan struct{}),
+		now:  time.Now,
+	}
+}
+
+func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiver) error {
+	sender := core.NewSender(media, track.Codec)
+
+	switch track.Codec.Name {
+	case core.CodecH264:
+		c.mu.Lock()
+		c.video = track.Codec
+		c.mu.Unlock()
+
+		sender.Handler = c.handleVideo
+		if track.Codec.IsRTP() {
+			sender.Handler = h264.RTPDepay(track.Codec, sender.Handler)
+		} else {
+			sender.Handler = h264.RepairAVCC(track.Codec, sender.Handler)
+		}
+
+	case core.CodecAAC:
+		c.mu.Lock()
+		c.audio = track.Codec
+		c.mu.Unlock()
+
+		sender.Handler = c.handleAudio
+		if track.Codec.IsRTP() {
+			sender.Handler = aac.RTPDepay(sender.Handler)
+		}
+
+	default:
+		return errors.New("unifi: unsupported codec " + track.Codec.Name)
+	}
+
+	sender.HandleRTP(track)
+	c.Senders = append(c.Senders, sender)
+	return nil
+}
+
+// TrackCodecs returns the video and audio codec the stream delivered (either may be nil).
+func (c *Consumer) TrackCodecs() (video, audio *core.Codec) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.video, c.audio
+}
+
+// CountFrames waits d and returns the video frames received meanwhile.
+func (c *Consumer) CountFrames(d time.Duration) int {
+	c.mu.Lock()
+	start := c.frames
+	c.mu.Unlock()
+	time.Sleep(d)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.frames - start
+}
+
+// Size returns the video resolution, from the codec or the first keyframe (0 if unknown yet).
+func (c *Consumer) Size() (width, height int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.width, c.height
+}
+
+// WriteTo starts streaming to wr and blocks until a write fails or Stop is called.
+// Output begins with the first keyframe; earlier frames are dropped.
+func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
+	if closer, ok := wr.(io.Closer); ok {
+		c.closer.Store(closer)
+	}
+
+	c.mu.Lock()
+	c.wr = wr
+	c.mu.Unlock()
+
+	<-c.done
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return int64(c.Send), c.err
+}
+
+// Stop ends WriteTo. The writer is closed first: a write blocked on a stalled
+// socket holds c.mu and would otherwise delay Stop by the write timeout.
+func (c *Consumer) Stop() error {
+	if closer, ok := c.closer.Load().(io.Closer); ok {
+		_ = closer.Close()
+	}
+	c.mu.Lock()
+	c.finish(nil)
+	c.mu.Unlock()
+	return c.Connection.Stop()
+}
+
+// finish must be called with c.mu held.
+func (c *Consumer) finish(err error) {
+	if c.closed {
+		return
+	}
+	c.closed = true
+	c.err = err
+	close(c.done)
+}
+
+func (c *Consumer) handleVideo(pkt *rtp.Packet) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed {
+		return
+	}
+
+	c.frames++
+	key := h264.IsKeyframe(pkt.Payload)
+	if key && c.width == 0 {
+		sps, _ := c.parameterSets(pkt.Payload)
+		if s := h264.DecodeSPS(sps); s != nil {
+			c.width, c.height = int(s.Width()), int(s.Height())
+		}
+	}
+
+	if c.wr == nil {
+		return
+	}
+
+	now := c.now()
+
+	b := c.buf[:0]
+	if !c.started {
+		if !key {
+			return
+		}
+		c.started = true
+		c.mux = newMuxer(now)
+		c.vclock = trackClock{rate: int64(clockRate(c.video, clockVideo))}
+		b = c.appendInit(b, pkt.Payload)
+	}
+
+	at := c.vclock.next(pkt.Timestamp, now.Sub(c.mux.start))
+	c.vpos = at
+
+	payload := pkt.Payload
+	if key {
+		payload = c.replaceSPS(payload)
+		b = c.mux.appendSync(b, at, now)
+	}
+
+	hdr := [5]byte{2<<4 | 7, 1} // inter frame, AVC NALU; composition time stays 0
+	if key {
+		hdr[0] = 1<<4 | 7 // keyframe
+	}
+
+	c.write(c.mux.appendTag(b, tagVideo, at, hdr[:], payload))
+}
+
+func (c *Consumer) handleAudio(pkt *rtp.Packet) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Real cameras drop audio that arrives before the video timeline starts.
+	if c.wr == nil || c.closed || !c.started || c.audio == nil {
+		return
+	}
+
+	now := c.now()
+	if c.aclock.rate == 0 {
+		c.aclock = trackClock{rate: int64(clockRate(c.audio, 16000))}
+	}
+	at := c.aclock.next(pkt.Timestamp, now.Sub(c.mux.start))
+
+	hdr := [2]byte{aacFlags, 1} // raw AAC frame
+	c.write(c.mux.appendTag(c.buf[:0], tagAudio, at, hdr[:], pkt.Payload))
+}
+
+// aacFlags is the FLV audio header byte ffmpeg writes for AAC regardless of the
+// real rate: AAC, "44 kHz", 16 bit, "stereo". Decoders take the real values
+// from the AudioSpecificConfig.
+const aacFlags = 10<<4 | 3<<2 | 1<<1 | 1
+
+// write sends b, which is then kept as the next output buffer (Write does not
+// retain it). Must be called with c.mu held.
+func (c *Consumer) write(b []byte) {
+	if cap(b) <= maxBuffer {
+		c.buf = b[:0]
+	}
+	if d, ok := c.wr.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = d.SetWriteDeadline(time.Now().Add(writeTimeout))
+	}
+	n, err := c.wr.Write(b)
+	c.Send += n
+	if err != nil {
+		c.finish(err)
+	}
+}
+
+// appendInit appends the file header, onMetaData and the decoder configs. It is
+// called with the first keyframe, so missing SPS/PPS can be taken from it.
+func (c *Consumer) appendInit(b []byte, keyframe []byte) []byte {
+	sps, pps := c.parameterSets(keyframe)
+
+	// Without an AudioSpecificConfig the AAC frames can't be decoded: send video only.
+	var audioConfig []byte
+	if c.audio != nil {
+		audioConfig, _ = hex.DecodeString(core.Between(c.audio.FmtpLine, "config=", ";"))
+		if len(audioConfig) == 0 {
+			c.audio = nil
+		}
+	}
+
+	b = append(b, fileHeader(c.audio != nil)...)
+	b = c.mux.appendTag(b, tagScript, 0, ScriptData("onMetaData", c.metadata(c.width, c.height)))
+
+	if len(sps) > 0 && len(pps) > 0 {
+		config := append([]byte{1<<4 | 7, 0, 0, 0, 0}, h264.EncodeConfig(c.fixSPS(sps), pps)...)
+		b = c.mux.appendTag(b, tagVideo, 0, config)
+	}
+
+	if len(audioConfig) > 0 {
+		b = c.mux.appendTag(b, tagAudio, 0, append([]byte{aacFlags, 0}, audioConfig...))
+	}
+
+	return b
+}
+
+// fixSPS returns the SPS as sent to Protect: pixel format fixed and frame-rate
+// timing added (see withTiming). The result is cached, since cameras repeat the
+// same SPS with every keyframe.
+func (c *Consumer) fixSPS(sps []byte) []byte {
+	if c.spsIn != nil && bytes.Equal(sps, c.spsIn) {
+		return c.spsOut
+	}
+	out := append([]byte(nil), sps...) // FixPixFmt writes in place; the payload is shared
+	h264.FixPixFmt(out)
+	out = withTiming(out, c.opts.FPS)
+	c.spsIn, c.spsOut = append([]byte(nil), sps...), out
+	return out
+}
+
+// replaceSPS returns an AVCC frame with its in-band SPS replaced by fixSPS's
+// version, so the decoder config and the stream agree. The frame is shared with
+// other consumers and is copied, never changed.
+func (c *Consumer) replaceSPS(avcc []byte) []byte {
+	var out []byte
+	for i := 0; len(avcc)-i > 4; {
+		size := int(binary.BigEndian.Uint32(avcc[i:]))
+		if size <= 0 || i+4+size > len(avcc) {
+			break
+		}
+		nalu := avcc[i+4 : i+4+size]
+		if nalu[0]&0x1F == h264.NALUTypeSPS {
+			if fixed := c.fixSPS(nalu); !bytes.Equal(fixed, nalu) {
+				if out == nil {
+					out = make([]byte, 0, len(avcc)+len(fixed)-len(nalu))
+					out = append(out, avcc[:i]...)
+				}
+				out = binary.BigEndian.AppendUint32(out, uint32(len(fixed)))
+				out = append(out, fixed...)
+				i += 4 + size
+				continue
+			}
+		}
+		if out != nil {
+			out = append(out, avcc[i:i+4+size]...)
+		}
+		i += 4 + size
+	}
+	if out == nil {
+		return avcc
+	}
+	return out
+}
+
+// parameterSets returns SPS and PPS from the codec, or else from a keyframe.
+func (c *Consumer) parameterSets(keyframe []byte) (sps, pps []byte) {
+	sps, pps = h264.GetParameterSet(c.video.FmtpLine)
+	if len(sps) == 0 || len(pps) == 0 {
+		sps, pps = parameterSets(keyframe)
+	}
+	return
+}
+
+// trackClock turns a track's 32-bit RTP timestamps into a continuous position
+// on the stream timeline, the way a camera stamps frames with its capture clock.
+//
+// 32-bit tick deltas wrap (after 13 h at 90 kHz) and restart when a go2rtc
+// producer reconnects under a running consumer; on such a discontinuity the
+// timeline is re-anchored to the wall-clock time since the stream started. The
+// source's clock also drifts against the wall clock (crystals are off by tens
+// of ppm, a second every few hours); beyond maxDrift the steps are nudged
+// towards wall time. Positions never go backwards.
+type trackClock struct {
+	rate    int64 // ticks per second
+	last    uint32
+	ticks   int64 // position on the timeline, in ticks
+	started bool
+}
+
+const (
+	maxTrackGap = 5                      // seconds; a larger forward step is a discontinuity
+	maxDrift    = 500 * time.Millisecond // tolerated distance from wall time
+	driftSlew   = 256                    // fraction of the excess corrected per frame
+)
+
+func (t *trackClock) next(ts uint32, elapsed time.Duration) time.Duration {
+	wall := ticks(elapsed, t.rate)
+	if !t.started {
+		t.started = true
+		t.ticks = wall
+	} else if d := int64(int32(ts - t.last)); d < 0 || d > maxTrackGap*t.rate {
+		t.ticks = max(wall, t.ticks)
+	} else {
+		limit := ticks(maxDrift, t.rate)
+		if diff := wall - (t.ticks + d); diff > limit {
+			d += (diff - limit) / driftSlew
+		} else if diff < -limit {
+			d = max(d+(diff+limit)/driftSlew, 0)
+		}
+		t.ticks += d
+	}
+	t.last = ts
+	return time.Duration(t.ticks/t.rate)*time.Second + time.Duration(t.ticks%t.rate*int64(time.Second)/t.rate)
+}
+
+// metadata returns onMetaData. By default it is the AMF object a real UniFi
+// camera sends (libubnt_encoder in firmware 5.5.45; the keys as measured by
+// pyunifiwire on a G5, alphabetical as the camera serialises them). Protect files
+// recordings as <MAC>_<channelId>. The ffmpeg variant is what unifi-cam-proxy feeds
+// Protect for H.264 channels.
+func (c *Consumer) metadata(width, height int) any {
+	if c.opts.FFmpegMetadata {
+		return c.ffmpegMetadata(width, height)
+	}
+
+	ch := min(max(c.opts.Channel, 0), 2)
+	var m Object
+	if c.audio != nil {
+		// the camera removes the audio keys from a stream without audio
+		m = Object{
+			{"audioBandwidth", 32000},
+			{"audioChannels", max(int(c.audio.Channels), 1)},
+			{"audioFrequency", int(c.audio.ClockRate)},
+		}
+	}
+	return append(m, Object{
+		{"channelId", ch},
+		{"extendedFormat", true}, // extendedFlv serializer, as Protect requests
+		{"hasAudio", c.audio != nil},
+		{"hasVideo", true},
+		{"streamId", streamIDs[ch]},
+		{"streamName", c.opts.StreamName},
+		{"videoBandwidth", c.opts.Bitrate},
+		{"videoFps", c.opts.FPS},
+		{"videoHeight", height},
+		{"videoWidth", width},
+	}...)
+}
+
+func (c *Consumer) ffmpegMetadata(width, height int) ECMAArray {
+	m := ECMAArray{
+		{"duration", 0.0},
+		{"width", width},
+		{"height", height},
+		{"videodatarate", 0.0},
+	}
+	if c.opts.FPS > 0 {
+		m = append(m, Prop{"framerate", c.opts.FPS})
+	}
+	m = append(m, Prop{"videocodecid", 7})
+
+	if c.audio != nil {
+		m = append(m,
+			Prop{"audiodatarate", 0.0},
+			Prop{"audiosamplerate", int(c.audio.ClockRate)},
+			Prop{"audiosamplesize", 16},
+			Prop{"stereo", c.audio.Channels == 2},
+			Prop{"audiocodecid", 10},
+		)
+	}
+
+	return append(m,
+		Prop{"streamName", c.opts.StreamName},
+		Prop{"encoder", "Lavf61.7.100"},
+		Prop{"filesize", 0.0},
+	)
+}
+
+func clockRate(codec *core.Codec, def uint32) uint32 {
+	if codec != nil && codec.ClockRate >= 1000 {
+		return codec.ClockRate
+	}
+	return def
+}
+
+// parameterSets extracts SPS and PPS from an AVCC (4-byte length prefixed) frame.
+func parameterSets(avcc []byte) (sps, pps []byte) {
+	for len(avcc) > 4 {
+		size := int(avcc[0])<<24 | int(avcc[1])<<16 | int(avcc[2])<<8 | int(avcc[3])
+		if size <= 0 || 4+size > len(avcc) {
+			break
+		}
+		nalu := avcc[4 : 4+size]
+		switch nalu[0] & 0x1F {
+		case h264.NALUTypeSPS:
+			sps = nalu
+		case h264.NALUTypePPS:
+			pps = nalu
+		}
+		avcc = avcc[4+size:]
+	}
+	return
+}

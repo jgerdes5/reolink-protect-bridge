@@ -1,0 +1,6 @@
+/reolink-protect-bridge
+/dist/
+*.pem
+*.key
+/data/
+config.json
