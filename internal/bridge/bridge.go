@@ -555,6 +555,12 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 			if f.WantsKeyframe() {
 				cons.KeyframeWanted()
 			}
+			if e := log.Trace(); e.Enabled() {
+				e.Msgf("[bridge] %s: feedback type %d % x", channel, f.Type, f.Body)
+			} else if f.Type == unifi.FeedbackViewer && len(f.Body) >= 2 {
+				v := uint16(f.Body[0])<<8 | uint16(f.Body[1])
+				log.Debug().Msgf("[bridge] %s: Protect viewers %d (leaving=%t)", channel, v&0x7fff, v&0x8000 != 0)
+			}
 			if !b.onFeedback(channel, passthrough, f, func(body []byte) {
 				select {
 				case rtt <- body:
