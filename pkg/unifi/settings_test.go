@@ -90,3 +90,36 @@ func TestNightVision(t *testing.T) {
 	require.Equal(t, "on", ISP{IrLedMode: s("manual"), IrLedLevel: i(255)}.NightVision())
 	require.Equal(t, "off", ISP{IrLedMode: s("manual"), IrLedLevel: i(0)}.NightVision())
 }
+
+// Switching HDR reconnects the running streams, which ends Protect's
+// "reconfiguration in progress"; repeating the same mode does not.
+func TestHDRRestartsStreams(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	cam := &Camera{Settings: &settingsLog{}, Log: zerolog.Nop(),
+		Start: func(ch, addr, name, codec string) {
+			mu.Lock()
+			calls = append(calls, "start "+ch+" "+addr+" "+name+" "+codec)
+			mu.Unlock()
+		},
+		Stop: func(ch string) { mu.Lock(); calls = append(calls, "stop "+ch); mu.Unlock() },
+	}
+	cam.init()
+	cam.startChannel("video1", "192.0.2.1:7550", "s1", []string{"tcp://192.0.2.1:7550"})
+	mu.Lock()
+	calls = nil
+	mu.Unlock()
+
+	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"hdrMode":1}}`))
+	require.Eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return len(calls) == 2 }, time.Second, time.Millisecond)
+	mu.Lock()
+	require.Equal(t, []string{"stop video1", "start video1 192.0.2.1:7550 s1 h264"}, calls)
+	calls = nil
+	mu.Unlock()
+
+	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"hdrMode":1}}`))
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	require.Empty(t, calls)
+	mu.Unlock()
+}

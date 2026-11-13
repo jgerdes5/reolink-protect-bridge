@@ -577,6 +577,37 @@ func (c *Camera) stopChannel(name string) {
 	}
 }
 
+// restartStreams ends and reopens every running stream, as a UniFi camera's
+// encoder restart does (HDR). Protect keeps the camera's video settings
+// greyed out ("reconfiguration in progress") until its high-quality stream
+// reconnects (inStreamCreated).
+func (c *Camera) restartStreams() {
+	c.mu.Lock()
+	running := make(map[string]string, len(c.streaming))
+	for name, key := range c.streaming {
+		running[name] = key
+	}
+	c.mu.Unlock()
+	for _, name := range []string{"video1", "video2", "video3"} {
+		key, ok := running[name]
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(key, "|", 3) // addr|streamName|codec
+		if len(parts) != 3 {
+			continue
+		}
+		c.Log.Info().Msgf("[unifi] %s: restart %s", c.Name, name)
+		c.Stop(name)
+		c.mu.Lock()
+		still := c.streaming[name] == key // not stopped or changed meanwhile
+		c.mu.Unlock()
+		if still {
+			c.Start(name, parts[0], parts[1], parts[2])
+		}
+	}
+}
+
 func (c *Camera) stopAll() {
 	for _, name := range []string{"video1", "video2", "video3"} {
 		c.stopChannel(name)

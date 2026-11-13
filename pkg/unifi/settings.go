@@ -240,9 +240,15 @@ func (c *Camera) applySetting(fn string, payload json.RawMessage) {
 		if v.Video.HdrMode != nil {
 			on := *v.Video.HdrMode != 0
 			c.mu.Lock()
+			changed := c.hdr != on
 			c.hdr = on
 			c.mu.Unlock()
-			jobs = append(jobs, func() { c.Settings.HDR(on) })
+			jobs = append(jobs, func() {
+				c.Settings.HDR(on)
+				if changed {
+					c.restartStreams() // Protect waits for it to end the switch
+				}
+			})
 		}
 		if len(jobs) == 0 {
 			return
