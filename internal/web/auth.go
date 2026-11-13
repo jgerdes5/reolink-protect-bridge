@@ -141,6 +141,7 @@ func sessionToken(r *http.Request) string {
 type limiter struct {
 	mu    sync.Mutex
 	fails map[string]*failState
+	now   func() time.Time // for tests
 }
 
 type failState struct {
@@ -149,7 +150,7 @@ type failState struct {
 	last  time.Time
 }
 
-func newLimiter() *limiter { return &limiter{fails: map[string]*failState{}} }
+func newLimiter() *limiter { return &limiter{fails: map[string]*failState{}, now: time.Now} }
 
 func clientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -167,7 +168,7 @@ func clientIP(r *http.Request) string {
 func (l *limiter) reserve(ip string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	for k, f := range l.fails { // forget old entries
 		if now.Sub(f.last) > time.Hour {
 			delete(l.fails, k)

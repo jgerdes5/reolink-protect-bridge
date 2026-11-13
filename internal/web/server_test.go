@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jgerdes5/reolink-protect-bridge/internal/config"
 	"github.com/jgerdes5/reolink-protect-bridge/internal/logbuf"
@@ -28,13 +29,18 @@ type client struct {
 }
 
 func newTest(t *testing.T) (*client, *config.Store) {
+	c, store, _ := newTestServer(t)
+	return c, store
+}
+
+func newTestServer(t *testing.T) (*client, *config.Store, *Server) {
 	store, err := config.Open(t.TempDir())
 	require.NoError(t, err)
 	s := New(Options{Store: store, Logs: logbuf.New(nil, 10), Log: zerolog.Nop(), Version: "test"})
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
 	jar, _ := cookiejar.New(nil)
-	return &client{t: t, srv: srv, c: &http.Client{Jar: jar}}, store
+	return &client{t: t, srv: srv, c: &http.Client{Jar: jar}}, store, s
 }
 
 func (c *client) do(method, path string, body any, csrf bool) (*http.Response, map[string]any) {
@@ -154,7 +160,10 @@ func (c *client) raw(method, path string) (*http.Response, string) {
 }
 
 func TestLoginRateLimit(t *testing.T) {
-	c, _ := newTest(t)
+	c, _, s := newTestServer(t)
+	// a stopped clock: bcrypt on a slow machine must not outlast the lockout
+	now := time.Now()
+	s.limiter.now = func() time.Time { return now }
 	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
 	c.do("POST", "/api/logout", nil, true)
 	for range 5 {
@@ -416,7 +425,9 @@ func TestCertPin(t *testing.T) {
 
 // Parallel wrong passwords must not get more than 5 tries past the limiter.
 func TestLoginRateLimitParallel(t *testing.T) {
-	c, _ := newTest(t)
+	c, _, s := newTestServer(t)
+	now := time.Now() // stopped clock: the lockout must not end mid-test
+	s.limiter.now = func() time.Time { return now }
 	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
 	c.do("POST", "/api/logout", nil, true)
 	var wg sync.WaitGroup
