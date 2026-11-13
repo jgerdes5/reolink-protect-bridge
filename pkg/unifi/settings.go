@@ -17,6 +17,16 @@ type Settings interface {
 	Motion(Motion)
 	HDR(on bool)
 	OSD(OSD)
+	Video(Video)
+}
+
+// Video is a channel's frame rate and bitrate from ChangeVideoSettings
+// (serializeForCamera: fps for every channel, bitRateVbrMax only for the
+// high-quality one). Zero means not sent.
+type Video struct {
+	Channel string // video1 | video2 | video3
+	FPS     int
+	Bitrate int // bit/s
 }
 
 // OSD is ChangeOsdSettings for cameras without the overlay API
@@ -209,14 +219,39 @@ func (c *Camera) applySetting(fn string, payload json.RawMessage) {
 				HdrMode *int `json:"hdrMode"`
 			} `json:"video"`
 		}
-		if json.Unmarshal(payload, &v) != nil || v.Video.HdrMode == nil {
+		var ch struct {
+			Video map[string]json.RawMessage `json:"video"`
+		}
+		if json.Unmarshal(payload, &v) != nil || json.Unmarshal(payload, &ch) != nil {
 			return
 		}
-		on := *v.Video.HdrMode != 0
-		c.mu.Lock()
-		c.hdr = on
-		c.mu.Unlock()
-		job = func() { c.Settings.HDR(on) }
+		var jobs []func()
+		for _, name := range []string{"video1", "video2", "video3"} {
+			var t struct {
+				FPS     int `json:"fps"`
+				Bitrate int `json:"bitRateVbrMax"`
+			}
+			if raw := ch.Video[name]; raw == nil || json.Unmarshal(raw, &t) != nil || (t.FPS <= 0 && t.Bitrate <= 0) {
+				continue
+			}
+			vs := Video{Channel: name, FPS: max(t.FPS, 0), Bitrate: max(t.Bitrate, 0)}
+			jobs = append(jobs, func() { c.Settings.Video(vs) })
+		}
+		if v.Video.HdrMode != nil {
+			on := *v.Video.HdrMode != 0
+			c.mu.Lock()
+			c.hdr = on
+			c.mu.Unlock()
+			jobs = append(jobs, func() { c.Settings.HDR(on) })
+		}
+		if len(jobs) == 0 {
+			return
+		}
+		job = func() {
+			for _, j := range jobs {
+				j()
+			}
+		}
 	default:
 		return
 	}

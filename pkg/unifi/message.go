@@ -3,6 +3,7 @@ package unifi
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -25,6 +26,11 @@ type Message struct {
 type Channel struct {
 	Width, Height, FPS int
 	Codec              string // what the source delivers: "h264" (default) or "h265"
+	// What the source's encoder offers, if known: shown as the choices in
+	// Protect's frame rate and bitrate settings.
+	FPSValues              []int
+	Bitrate                int // current, bit/s
+	BitrateMin, BitrateMax int // bit/s
 }
 
 // Identity is what Protect uses to recognise the camera model. Since Protect 3
@@ -149,6 +155,10 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 	for k, v := range c.codecs {
 		requested[k] = v
 	}
+	fpsReq := make(map[string]int, len(c.fpsReq))
+	for k, v := range c.fpsReq {
+		fpsReq[k] = v
+	}
 	c.mu.Unlock()
 
 	// The codec each channel is streamed in: what Protect asked for (the
@@ -202,6 +212,24 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 		}
 		if ordinal > 0 {
 			t["currentVbrBitrate"] = vbrMax
+		}
+		// the doorbell's real choices, so Protect offers only what it can do
+		if len(ch.FPSValues) > 0 {
+			t["validFpsValues"] = ch.FPSValues
+			t["maxFps"] = slices.Max(ch.FPSValues)
+			if f := fpsReq[name]; f > 0 {
+				t["fps"] = closest(ch.FPSValues, f)
+			}
+		}
+		if ch.Bitrate > 0 {
+			t["bitRateVbrMax"] = ch.Bitrate
+			if ordinal > 0 {
+				t["currentVbrBitrate"] = ch.Bitrate
+			}
+		}
+		if ch.BitrateMax > 0 {
+			t["validBitrateRangeMin"] = ch.BitrateMin
+			t["validBitrateRangeMax"] = ch.BitrateMax
 		}
 		return t
 	}
@@ -329,3 +357,14 @@ func firmwareVersion(uri string) string {
 }
 
 var versionRE = regexp.MustCompile(`\d+\.\d+\.\d+`)
+
+// closest is the value in values nearest to v.
+func closest(values []int, v int) int {
+	best := values[0]
+	for _, x := range values {
+		if d, bd := x-v, best-v; d*d < bd*bd || (d*d == bd*bd && x > best) {
+			best = x
+		}
+	}
+	return best
+}

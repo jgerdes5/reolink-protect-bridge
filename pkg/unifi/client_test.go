@@ -408,6 +408,40 @@ func TestChangeVideoSettingsCodec(t *testing.T) {
 	require.Equal(t, [3]string{"h265", "h265", "h265"}, [3]string{vc, t1, t2})
 }
 
+// The reply offers the doorbell's frame rates and bitrates and, with
+// EchoVideo, reports a requested frame rate at once (rounded to the offer).
+func TestChangeVideoSettingsEncoder(t *testing.T) {
+	c := &Camera{
+		Name:      "t",
+		EchoVideo: true,
+		Channel: func(string) Channel {
+			return Channel{Width: 2560, Height: 1920, FPS: 20, FPSValues: []int{2, 10, 15, 20}, Bitrate: 6144000, BitrateMin: 4096000, BitrateMax: 8192000}
+		},
+		Start: func(string, string, string, string) {},
+		Stop:  func(string) {},
+		Log:   zerolog.Nop(),
+	}
+	c.init()
+	video1 := func(res map[string]any) map[string]any {
+		return res["video"].(map[string]any)["video1"].(map[string]any)
+	}
+
+	v := video1(c.changeVideoSettings(json.RawMessage(`{}`)))
+	require.Equal(t, 20, v["fps"])
+	require.Equal(t, []int{2, 10, 15, 20}, v["validFpsValues"])
+	require.Equal(t, 20, v["maxFps"])
+	require.Equal(t, 6144000, v["bitRateVbrMax"])
+	require.Equal(t, [2]any{4096000, 8192000}, [2]any{v["validBitrateRangeMin"], v["validBitrateRangeMax"]})
+
+	v = video1(c.changeVideoSettings(json.RawMessage(`{"video":{"video1":{"fps":12}}}`)))
+	require.Equal(t, 10, v["fps"]) // 12 is not offered: the closest is 10
+
+	c.EchoVideo = false
+	c.fpsReq = map[string]int{}
+	v = video1(c.changeVideoSettings(json.RawMessage(`{"video":{"video1":{"fps":15}}}`)))
+	require.Equal(t, 20, v["fps"]) // not applied to the doorbell: its real rate
+}
+
 // Ring through Protect's API reuses its login and logs in again when refused.
 // (Against a local fake console only.)
 func TestProtectRing(t *testing.T) {

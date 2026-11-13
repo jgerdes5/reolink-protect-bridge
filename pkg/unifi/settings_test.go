@@ -18,6 +18,7 @@ type settingsLog struct {
 	mot   []Motion
 	hdr   []bool
 	osd   []OSD
+	video []Video
 }
 
 func (s *settingsLog) ISP(v ISP)           { s.mu.Lock(); s.isp = append(s.isp, v); s.mu.Unlock() }
@@ -30,6 +31,7 @@ func (s *settingsLog) SmartDetect(v SmartDetect) {
 func (s *settingsLog) Motion(v Motion) { s.mu.Lock(); s.mot = append(s.mot, v); s.mu.Unlock() }
 func (s *settingsLog) HDR(on bool)     { s.mu.Lock(); s.hdr = append(s.hdr, on); s.mu.Unlock() }
 func (s *settingsLog) OSD(v OSD)       { s.mu.Lock(); s.osd = append(s.osd, v); s.mu.Unlock() }
+func (s *settingsLog) Video(v Video)   { s.mu.Lock(); s.video = append(s.video, v); s.mu.Unlock() }
 
 func TestApplySettings(t *testing.T) {
 	log := &settingsLog{}
@@ -42,7 +44,7 @@ func TestApplySettings(t *testing.T) {
 		"zones":{"1":{"coord":[0,0,1000,0,1000,1000,0,1000],"sensitivity":60,"objectTypes":["person"]}},
 		"lines":{"2":{"coord":[200,600,800,600,500,0],"crosslineDirection":"A2B","objectTypes":["person"]}}}`))
 	cam.applySetting("ChangeSmartMotionSettings", json.RawMessage(`{"enable":true,"zones":{"1":{"coord":[0,0,500,0,500,500,0,500],"level":30}}}`))
-	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"video1":{"fps":20}}}`)) // no HDR in it
+	cam.applySetting("ChangeVideoSettings", json.RawMessage(`{"video":{"video1":{"fps":20,"bitRateVbrMax":4000000},"video2":{"fps":15},"video3":{"enabled":true}}}`)) // no HDR in it
 	cam.applySetting("ChangeOsdSettings", json.RawMessage(`{"_1":{"tag":"Haustür","enableDate":1,"enableLogo":0},"_2":{},"overlayLocation":"bottomRight"}`))
 	cam.applySetting("ChangeIspSettings", json.RawMessage(`{"masks":{"color":[0,128,128],"7":{"update":true,"coord":[0,0,100,0,100,100,0,100]},"3":{"coord":[1,2,3,4,5,6]}}}`))
 	cam.applySetting("ChangeIspSettings", json.RawMessage(`{"masks":{"0":null}}`))
@@ -72,6 +74,7 @@ func TestApplySettings(t *testing.T) {
 	require.True(t, *log.mot[0].Enable)
 	require.Equal(t, 30, log.mot[0].Zones["1"].Level)
 	require.Equal(t, []bool{true}, log.hdr)
+	require.Equal(t, []Video{{Channel: "video1", FPS: 20, Bitrate: 4000000}, {Channel: "video2", FPS: 15}}, log.video)
 
 	cam.mu.Lock()
 	require.True(t, cam.hdr) // echoed in the next ChangeVideoSettings reply

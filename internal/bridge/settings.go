@@ -36,6 +36,7 @@ type settings struct {
 	smart    *unifi.SmartDetect
 	motion   *unifi.Motion
 	osd      *unifi.OSD
+	video    map[string]unifi.Video // channel -> frame rate / bitrate
 	timer    *time.Timer
 	enabled  map[string]bool // Protect object types with smart detection on; nil = all
 }
@@ -87,6 +88,16 @@ func (s *settings) OSD(v unifi.OSD) {
 	s.schedule()
 }
 
+func (s *settings) Video(v unifi.Video) {
+	s.mu.Lock()
+	if s.video == nil {
+		s.video = map[string]unifi.Video{}
+	}
+	s.video[v.Channel] = v
+	s.mu.Unlock()
+	s.schedule()
+}
+
 func (s *settings) Motion(v unifi.Motion) {
 	s.mu.Lock()
 	s.motion = &v
@@ -118,15 +129,15 @@ func (s *settings) schedule() {
 // flush applies everything pending.
 func (s *settings) flush() {
 	s.mu.Lock()
-	isp, sound, smart, motion, osd := s.isp, s.sound, s.smart, s.motion, s.osd
-	s.isp, s.sound, s.smart, s.motion, s.osd = nil, nil, nil, nil, nil
+	isp, sound, smart, motion, osd, video := s.isp, s.sound, s.smart, s.motion, s.osd, s.video
+	s.isp, s.sound, s.smart, s.motion, s.osd, s.video = nil, nil, nil, nil, nil, nil
 	hdr := ""
 	if s.hdrDirty && s.hdrOn != nil {
 		hdr = hdrSwitch(*s.hdrOn, s.hdrMode)
 	}
 	s.hdrDirty = false
 	s.mu.Unlock()
-	if isp == nil && hdr == "" && sound == nil && smart == nil && motion == nil && osd == nil {
+	if isp == nil && hdr == "" && sound == nil && smart == nil && motion == nil && osd == nil && video == nil {
 		return
 	}
 
@@ -167,6 +178,9 @@ func (s *settings) flush() {
 		s.run(ctx, "privacy masks", func() error {
 			return update(ctx, client, msgMaskGet, msgMaskSet, ch, nil, maskChange(masks), "privacy masks")
 		})
+	}
+	if video != nil {
+		s.run(ctx, "frame rate and bitrate", func() error { return s.b.applyVideo(ctx, client, ch, video) })
 	}
 	if osd != nil {
 		s.run(ctx, "overlay", func() error {
@@ -523,32 +537,6 @@ func aiAreaChange(zones []unifi.Zone, sens int) func(*baichuan.Node) bool {
 			changed = true
 		}
 		return changed
-	}
-}
-
-// MsgEncGet/Set: Compression (encoder: resolution, fps, bitrate, gop) per stream.
-const (
-	msgEncGet = 56
-	msgEncSet = 57
-)
-
-// applyKeyframes sets the keyframe interval (gop, in frames) of both streams
-// to one second, within the range the doorbell reports, as a UniFi camera
-// streams. Live view and quality switches don't wait for it: the bridge passes
-// Protect's keyframe requests on (keyframe.go).
-func (b *Bridge) applyKeyframes(ctx context.Context) {
-	d := b.opts.Doorbell
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	client, err := b.dialControl(ctx)
-	if err != nil {
-		log.Debug().Err(err).Msg("[settings] keyframe interval: can't reach the doorbell")
-		return
-	}
-	defer client.Close()
-	err = update(ctx, client, msgEncGet, msgEncSet, uint8(d.Channel), nil, gopChange, "keyframe interval")
-	if err != nil {
-		log.Warn().Err(err).Msg("[settings] keyframe interval")
 	}
 }
 

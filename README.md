@@ -23,6 +23,7 @@ Protect app. No ONVIF, no third-party camera entry.
   own AI, with real bounding boxes that follow the object in live view
 - Smart detection zones, line crossing and loitering zones
 - These Protect settings are applied to the doorbell:
+  - frame rate and bitrate, limited to the values the doorbell offers
   - brightness, contrast, saturation, hue, sharpness, noise reduction
   - mirror and flip, anti-flicker (50/60 Hz)
   - night vision (auto, on, off, custom threshold) and HDR
@@ -51,7 +52,6 @@ Protect app. No ONVIF, no third-party camera entry.
   provide them
 - Package detection and audio detections (smoke alarm, glass break, ...)
 - These Protect settings have no counterpart on the doorbell and are ignored:
-  - video bitrate and frame rate
   - IR LED intensity
   - status sounds
   - microphone volume

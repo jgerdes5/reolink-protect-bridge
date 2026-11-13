@@ -46,6 +46,11 @@ type Camera struct {
 	// a running stream of the same channel. Stop ends it.
 	Start func(channel, addr, streamName, codec string)
 	Stop  func(channel string)
+	// EchoVideo reports the frame rate Protect asks for right away (rounded
+	// to the channel's FPSValues) because the caller applies it to the real
+	// camera. Protect takes the camera's reported fps over its own, so
+	// reporting the old value until the change is through would undo it.
+	EchoVideo bool
 	// Snapshot returns a current JPEG.
 	Snapshot func(ctx context.Context) ([]byte, error)
 	// RingAPI, if set, rings through Protect's HTTP API instead of the camera
@@ -69,6 +74,7 @@ type Camera struct {
 	streamNames map[string]string
 	streaming   map[string]string   // channel -> addr|streamName|codec currently started
 	codecs      map[string]string   // channel -> codec Protect asked for
+	fpsReq      map[string]int      // channel -> frame rate Protect asked for (EchoVideo)
 	dests       map[string][]string // channel -> destinations Protect gave it
 
 	httpOnce sync.Once
@@ -465,6 +471,7 @@ func (c *Camera) changeVideoSettings(payload json.RawMessage) map[string]any {
 	var p struct {
 		Video map[string]*struct {
 			Type         string `json:"type"` // the camera's videoCodec
+			FPS          int    `json:"fps"`
 			AvSerializer *struct {
 				Destinations []string `json:"destinations"`
 				Parameters   *struct {
@@ -493,11 +500,14 @@ func (c *Camera) changeVideoSettings(payload json.RawMessage) map[string]any {
 		if v == nil {
 			continue
 		}
+		c.mu.Lock()
 		if v.Type == "h264" || v.Type == "h265" {
-			c.mu.Lock()
 			c.codecs[name] = v.Type
-			c.mu.Unlock()
 		}
+		if v.FPS > 0 && c.EchoVideo {
+			c.fpsReq[name] = v.FPS
+		}
+		c.mu.Unlock()
 		if v.AvSerializer == nil {
 			continue
 		}
@@ -698,6 +708,7 @@ func (c *Camera) init() {
 		c.streamNames = map[string]string{}
 		c.streaming = map[string]string{}
 		c.codecs = map[string]string{}
+		c.fpsReq = map[string]int{}
 		c.dests = map[string][]string{}
 	}
 }
@@ -724,6 +735,10 @@ func (c *Camera) channel(name string) Channel {
 		}
 		if got.FPS > 0 {
 			ch.FPS = got.FPS
+		}
+		ch.FPSValues, ch.Bitrate = got.FPSValues, got.Bitrate
+		if got.BitrateMax > 0 && got.BitrateMin <= got.BitrateMax {
+			ch.BitrateMin, ch.BitrateMax = got.BitrateMin, got.BitrateMax
 		}
 	}
 	return ch

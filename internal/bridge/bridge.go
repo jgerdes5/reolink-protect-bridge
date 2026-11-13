@@ -81,6 +81,7 @@ type Bridge struct {
 	settings   *settings
 	tracker    *tracker
 	keys       *keyframer
+	enc        [2]encStream // main, sub encoder (encoder.go)
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -171,7 +172,9 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		Start:    b.start,
 		Stop:     func(channel string) { b.stop(channel) },
 		Snapshot: b.Snapshot,
-		Log:      logger,
+		// with settings sync the doorbell takes Protect's frame rate
+		EchoVideo: opts.Settings,
+		Log:       logger,
 	}
 	if opts.Ring == "api" {
 		if protect == nil {
@@ -234,7 +237,7 @@ func (b *Bridge) Run(ctx context.Context) {
 	if b.opts.Events {
 		go b.runEvents(ctx)
 	}
-	go b.applyKeyframes(ctx)
+	b.loadEncoder(ctx)
 	b.proto.Run(ctx)
 
 	for _, name := range channelNames {
@@ -340,8 +343,11 @@ func abs(x int) int {
 func (b *Bridge) channel(name string) unifi.Channel {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	info := b.info[min(channelIndex(name), 1)]
-	return unifi.Channel{Width: info.width, Height: info.height, FPS: info.fps, Codec: info.codec}
+	i := min(channelIndex(name), 1)
+	info := b.info[i]
+	ch := unifi.Channel{Width: info.width, Height: info.height, FPS: info.fps, Codec: info.codec}
+	b.encoderChannel(&ch, i)
+	return ch
 }
 
 func channelIndex(name string) int {
