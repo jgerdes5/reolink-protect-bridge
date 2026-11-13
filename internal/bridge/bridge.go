@@ -77,6 +77,7 @@ type Bridge struct {
 	runners  map[string]*runner
 	events   []Event // newest last, for the status page
 	eventsUp bool
+	settings *settings
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -180,6 +181,10 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		t := &talker{key: opts.Name, src: b.main, ffmpeg: opts.FFmpeg}
 		b.proto.Talk = t.feed
 	}
+	// Always receive Protect's settings: which smart detections are on filters
+	// the events; writing them to the doorbell is optional.
+	b.settings = &settings{b: b, apply: opts.Settings}
+	b.proto.Settings = b.settings
 	return b, nil
 }
 

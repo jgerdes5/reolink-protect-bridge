@@ -1,0 +1,12 @@
+.git
+.github
+.dockerignore
+Dockerfile
+deploy
+dist
+data
+/reolink-protect-bridge
+*.pem
+*.key
+config.json
+*.md

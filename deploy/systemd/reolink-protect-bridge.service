@@ -1,0 +1,42 @@
+[Unit]
+Description=Reolink Protect Bridge (Reolink doorbell as UniFi Protect camera)
+Documentation=https://github.com/jgerdes5/reolink-protect-bridge
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=rpb
+Group=rpb
+StateDirectory=reolink-protect-bridge
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/reolink-protect-bridge
+Environment=RPB_DATA=/var/lib/reolink-protect-bridge
+ExecStart=/usr/local/bin/reolink-protect-bridge -listen :8080
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

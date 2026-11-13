@@ -46,41 +46,42 @@ func rfc3339ms(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
-// featureFlags are the camera capabilities sent in hello and paramAgreement.
-// Vocabulary as measured from real cameras by unifi-cam-proxy (base.py).
+// featureFlags are the camera capabilities sent in the hello. Protect 7.3
+// reads only the short keys (FeatureFlagsModel.deserializeFromCamera): has*/can*
+// keys are ignored, and canAdjustIspSettings, hasWdr, hasMotionZones and
+// hasIcrSensitivity are always on. Each key below unlocks a setting in
+// Protect that the bridge applies to the doorbell.
 func (c *Camera) featureFlags() map[string]any {
 	mic := 0
 	if c.HasAudio {
 		mic = 1
 	}
 	flags := map[string]any{
-		"mic":                   mic,
-		"aec":                   []any{},
-		"videoMode":             []string{"default"},
-		"motionDetect":          []string{"enhanced"},
-		"smartDetect":           []string{"person", "vehicle", "animal"},
-		"smartDetectTypes":      []string{"person", "vehicle", "animal"},
-		"smartDetectAudioTypes": []any{},
-		"hasSmartDetect":        true,
-		"videoCodecs":           []string{"h264"},
-		"audioCodecs":           []string{"aac"},
-		"audioStyle":            []string{"nature"},
-		"hasHdr":                false,
-		"hasWdr":                true,
-		"hasMic":                c.HasAudio,
-		"hasSpeaker":            c.Talk != nil,
-		"hasInfrared":           false,
-		"hasMotionZones":        true,
-		"hasPrivacyMask":        false,
-		"isPtz":                 false,
-		"maxScaleDownLevel":     2,
-		"downScaleResolutions":  [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},
+		"mic":                  mic,
+		"aec":                  []any{},
+		"videoMode":            []string{"default"},
+		"motionDetect":         []string{"enhanced"},                    // ChangeSmartMotionSettings
+		"smartDetect":          []string{"person", "vehicle", "animal"}, // what Reolink's AI detects
+		"videoCodecs":          []string{"h264"},
+		"audioCodecs":          []string{"aac"},
+		"audioStyle":           []string{"nature"},
+		"horizontalFlip":       true, // mirror
+		"verticalFlip":         true, // flip
+		"hdr":                  true, // HDR selector -> Reolink hdrSwitch
+		"truedaynight":         true, // night vision block -> day/night mode and IR LEDs
+		"ledStatus":            true, // status light -> doorbell button light; PATCH ledSettings fails without it
+		"squareEventThumbnail": true,
+		"maxScaleDownLevel":    2,
+		"downScaleResolutions": [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},
 	}
 	if c.Doorbell {
-		flags["doorbell"] = true // Protect derives isDoorbell from this short key
+		flags["doorbell"] = true // isDoorbell
+		// the doorbell tone section (ring volume); Protect falls back to
+		// isDoorbell, not doorbell, so it must be sent
+		flags["supportCustomRingtone"] = true
 	}
 	if c.Talk != nil {
-		flags["speaker"] = true // Protect maps hasSpeaker from the short key
+		flags["speaker"] = true // hasSpeaker: talkback
 	}
 	return flags
 }
@@ -125,6 +126,10 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 	streamNames := make(map[string]string, len(c.streamNames))
 	for k, v := range c.streamNames {
 		streamNames[k] = v
+	}
+	hdrMode := 0 // Protect re-reads video.hdrMode after switching HDR
+	if c.hdr {
+		hdrMode = 1
 	}
 	c.mu.Unlock()
 
@@ -182,7 +187,7 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 		},
 		"firmwarePath": "/lib/firmware/",
 		"video": map[string]any{
-			"enableHrd": false, "hdrMode": 0, "lowDelay": false,
+			"enableHrd": false, "hdrMode": hdrMode, "lowDelay": false,
 			"videoMode": "default", "videoCodec": "h264",
 			"mjpg": map[string]any{
 				"avSerializer": map[string]any{

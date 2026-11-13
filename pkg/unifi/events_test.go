@@ -9,6 +9,7 @@ import (
 	"image/jpeg"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -223,17 +224,23 @@ func TestTalkback(t *testing.T) {
 	mu.Unlock()
 }
 
-func TestSpeakerFeatureFlags(t *testing.T) {
+func TestFeatureFlags(t *testing.T) {
 	cam := &Camera{Doorbell: true}
-	require.Equal(t, false, cam.featureFlags()["hasSpeaker"])
-	require.NotContains(t, cam.featureFlags(), "speaker")
+	f := cam.featureFlags()
+	require.NotContains(t, f, "speaker") // no talkback configured
+	require.Equal(t, true, f["doorbell"])
+	require.Equal(t, true, f["supportCustomRingtone"]) // doorbell tone section; Protect would fall back to isDoorbell
+	require.Equal(t, true, f["ledStatus"])             // without it Protect rejects LED changes
+	require.Equal(t, []string{"person", "vehicle", "animal"}, f["smartDetect"])
+
 	cam.Talk = func([]byte) {}
-	require.Equal(t, true, cam.featureFlags()["hasSpeaker"])
 	require.Equal(t, true, cam.featureFlags()["speaker"])
-	// the Reolink doorbell has no display: no LCD capability is ever claimed
+
 	for k := range cam.featureFlags() {
-		require.NotContains(t, k, "lcd")
-		require.NotContains(t, k, "Lcd")
+		// Protect only reads short keys: has*/can* would be dead weight
+		require.False(t, strings.HasPrefix(k, "has") || strings.HasPrefix(k, "can"), k)
+		// the Reolink doorbell has no display: no LCD capability is ever claimed
+		require.NotContains(t, strings.ToLower(k), "lcd")
 	}
 }
 

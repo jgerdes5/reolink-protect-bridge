@@ -9,6 +9,7 @@ require (
 	github.com/pion/rtp v1.10.6
 	github.com/rs/zerolog v1.35.1
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/crypto v0.58.0
 )
 
 require (

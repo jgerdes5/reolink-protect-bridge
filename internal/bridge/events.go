@@ -168,6 +168,9 @@ func (r *recordingSink) Motion(on bool) {
 
 func (r *recordingSink) SmartDetect(object string) {
 	if object != "" {
+		if !r.b.settings.smartEnabled(object) {
+			return // switched off in Protect
+		}
 		r.b.addEvent(object)
 	}
 	r.eventSink.SmartDetect(object)

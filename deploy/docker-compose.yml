@@ -1,0 +1,25 @@
+# Reolink Protect Bridge
+#
+#   mkdir -p data && sudo chown 10001:10001 data   # container runs as uid 10001
+#   docker compose up -d
+#   open http://<host-ip>:8080
+services:
+  reolink-protect-bridge:
+    image: ghcr.io/jgerdes5/reolink-protect-bridge:latest
+    container_name: reolink-protect-bridge
+    restart: unless-stopped
+    # Host networking is required:
+    #  - UniFi Protect sends talkback audio as UDP to port 7004 on the address
+    #    it knows for the camera (the host's LAN IP). Behind Docker NAT the
+    #    console's packets would not reach the bridge, and the address the
+    #    bridge advertises would be the container IP, which Protect can't reach.
+    #  - Device discovery (Reolink and UniFi adoption) uses UDP broadcast, which
+    #    does not cross the Docker bridge network.
+    # With host networking the web UI listens directly on host port 8080
+    # (change with `command: ["-listen", ":8081"]`), "ports:" is not used.
+    network_mode: host
+    volumes:
+      - ./data:/data
+    environment:
+      RPB_DATA: /data
+      TZ: Europe/Berlin

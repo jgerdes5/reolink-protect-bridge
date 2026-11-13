@@ -50,6 +50,8 @@ type Camera struct {
 	// RingAPI, if set, rings through Protect's HTTP API instead of the camera
 	// protocol (see Ring).
 	RingAPI func(ctx context.Context) error
+	// Settings, if set, receives Protect's camera settings (settings.go).
+	Settings Settings
 	// Talk, if set, makes the camera a speaker: it receives Protect's talkback
 	// audio, one ADTS AAC frame (22.05 kHz mono) per call. See talkback.go.
 	Talk func(adts []byte)
@@ -73,6 +75,10 @@ type Camera struct {
 	ev   events
 	talk talkback
 	st   Status
+
+	hdr           bool // HDR as Protect last set it
+	settingsOnce  sync.Once
+	settingsQueue chan func()
 }
 
 // Status describes the connection to Protect, for a status page.
@@ -340,6 +346,8 @@ func (c *Camera) handle(ctx context.Context, msg *Message) error {
 	var res any // reply payload; nil means "no specific reply"
 	reply := fn
 
+	c.applySetting(fn, msg.Payload)
+
 	switch fn {
 	case "ubnt_avclient_hello":
 		var p struct {
@@ -410,7 +418,13 @@ func (c *Camera) handle(ctx context.Context, msg *Message) error {
 		res = c.networkStatus()
 
 	case "ChangeSoundLedSettings":
-		res = soundLedSettings
+		// syncCustomSound asks with {} and parses customSounds; we keep no
+		// custom ringtone, the doorbell plays its own.
+		if isEmptyPayload(msg.Payload) {
+			res = map[string]any{"customSounds": []any{}}
+		} else {
+			res = soundLedSettings
+		}
 
 	case "AnalyticsTest", "UpdateUsernamePassword",
 		"ChangeSmartDetectSettings", "ChangeSmartMotionSettings":
@@ -698,4 +712,9 @@ func (c *Camera) channel(name string) Channel {
 
 func (c *Camera) uptime() time.Duration {
 	return time.Since(c.started)
+}
+
+func isEmptyPayload(p json.RawMessage) bool {
+	s := strings.TrimSpace(string(p))
+	return s == "" || s == "{}" || s == "null"
 }
