@@ -14,16 +14,18 @@ const (
 	udpMagicData      = 0x2A87CF10
 )
 
-type udpPacket interface {
-	packetType() uint32
-}
+// udpPacket is one of udpDiscoveryPacket, udpAckPacket or udpDataPacket.
+type udpPacket = any
+
+// udpRecvWindow is how far ahead of the last consumed packet a data packet
+// may be. The camera sends far fewer in flight; a packet id beyond this is
+// bogus and would make the ack bitmap huge.
+const udpRecvWindow = 1024
 
 type udpDiscoveryPacket struct {
 	TID     uint32
 	Payload []byte
 }
-
-func (udpDiscoveryPacket) packetType() uint32 { return udpMagicDiscovery }
 
 type udpAckPacket struct {
 	ConnectionID int32
@@ -31,15 +33,11 @@ type udpAckPacket struct {
 	Payload      []byte
 }
 
-func (udpAckPacket) packetType() uint32 { return udpMagicAck }
-
 type udpDataPacket struct {
 	ConnectionID int32
 	PacketID     uint32
 	Payload      []byte
 }
-
-func (udpDataPacket) packetType() uint32 { return udpMagicData }
 
 type udpP2PEnvelope struct {
 	XMLName xml.Name       `xml:"P2P"`
@@ -259,6 +257,11 @@ func ackWindow(store map[uint32][]byte, consumed uint32, hasConsumed bool) (uint
 	// end-start would underflow to ~4G and make() would OOM
 	if end <= start {
 		return start, nil, true
+	}
+	// readLoop drops packets beyond the window; cap here too so the bitmap
+	// can never be larger than that
+	if end-start > udpRecvWindow {
+		end = start + udpRecvWindow
 	}
 
 	payload := make([]byte, 0, end-start)

@@ -96,14 +96,19 @@ func (s *Source) Run(ctx context.Context) {
 
 		done := make(chan error, 1)
 		go func() { done <- prod.Start() }()
+		stopped := false
 		select {
 		case err = <-done:
+			stopped = true
 		case <-ctx.Done():
-			_ = prod.Stop()
+		}
+		// Forget the producer before stopping it: AddConsumer holds s.mu while
+		// it adds tracks, so after detach none can reach a stopping producer.
+		s.detach(err)
+		_ = prod.Stop()
+		if !stopped {
 			<-done
 		}
-		_ = prod.Stop()
-		s.detach(err)
 		if ctx.Err() == nil {
 			s.Log.Warn().Err(err).Msgf("[source] %s: disconnected", s.Name)
 		}
@@ -210,6 +215,21 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 		return errors.New(s.Name + " disconnected")
 	}
 
+	// On an error, undo what this call already added, so a failed consumer
+	// is neither fed nor has its backchannel re-attached on reconnect.
+	var added []*core.Receiver
+	fail := func(err error) error {
+		s.forget(func(_ core.Consumer, r *core.Receiver) bool {
+			for _, a := range added {
+				if a == r {
+					return true
+				}
+			}
+			return false
+		})
+		return err
+	}
+
 	matched := false
 	for _, consMedia := range cons.GetMedias() {
 	medias:
@@ -226,11 +246,12 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 				}
 				r := core.NewReceiver(prodMedia, prodCodec)
 				if err := cons.AddTrack(consMedia, consCodec, r); err != nil {
-					return err
+					return fail(err)
 				}
 				f.mu.Lock()
 				f.outs = append(f.outs, fanOut{cons: cons, r: r})
 				f.mu.Unlock()
+				added = append(added, r)
 			case core.DirectionSendonly:
 				p, ok := cons.(core.Producer)
 				if !ok {
@@ -238,12 +259,13 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 				}
 				track, err := p.GetTrack(consMedia, consCodec)
 				if err != nil {
-					return err
+					return fail(err)
 				}
 				if err = s.prod.AddTrack(prodMedia, prodCodec, track); err != nil {
-					return err
+					return fail(err)
 				}
 				s.backs = append(s.backs, back{cons: cons, track: track})
+				added = append(added, track)
 			}
 			matched = true
 			break medias
@@ -260,9 +282,15 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 func (s *Source) RemoveConsumer(cons core.Consumer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.forget(func(c core.Consumer, _ *core.Receiver) bool { return c == cons })
+}
+
+// forget drops the fanout outputs and backchannel tracks that match. The
+// caller holds s.mu.
+func (s *Source) forget(match func(core.Consumer, *core.Receiver) bool) {
 	backs := s.backs[:0]
 	for _, b := range s.backs {
-		if b.cons != cons {
+		if !match(b.cons, b.track) {
 			backs = append(backs, b)
 		}
 	}
@@ -271,7 +299,7 @@ func (s *Source) RemoveConsumer(cons core.Consumer) {
 		f.mu.Lock()
 		outs := f.outs[:0]
 		for _, o := range f.outs {
-			if o.cons != cons {
+			if !match(o.cons, o.r) {
 				outs = append(outs, o)
 			}
 		}

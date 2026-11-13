@@ -42,7 +42,7 @@ func (c *Client) SubscribeAlarms(ctx context.Context) (<-chan []AlarmEvent, func
 		return nil, nil, err
 	}
 
-	out := make(chan []AlarmEvent, 16)
+	out := make(chan []AlarmEvent, 64)
 	stop := make(chan struct{})
 	go func() {
 		defer close(out)
@@ -55,8 +55,23 @@ func (c *Client) SubscribeAlarms(ctx context.Context) (<-chan []AlarmEvent, func
 				}
 				select {
 				case out <- events:
-				default: // a stalled reader must not block the connection
+					continue
+				default:
+				}
+				// A ring must never be lost: wait for the reader. This only
+				// holds up this goroutine; the connection's read loop keeps
+				// going (its subscriber buffer is large). Motion and AI
+				// updates are still dropped, as before.
+				if !hasVisitor(events) {
 					log.Printf("[baichuan] WARNING: alarm reader busy, event dropped (msgNum=%d)", msg.Header.MsgNum)
+					continue
+				}
+				select {
+				case out <- events:
+				case <-stop:
+					return
+				case <-c.closed:
+					return
 				}
 			case <-stop:
 				return
@@ -73,6 +88,15 @@ func (c *Client) SubscribeAlarms(ctx context.Context) (<-chan []AlarmEvent, func
 			unsubscribe()
 		})
 	}, nil
+}
+
+func hasVisitor(events []AlarmEvent) bool {
+	for _, e := range events {
+		if e.Visitor {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseAlarms decodes the AlarmEvent entries of a msg 33 body:

@@ -19,6 +19,14 @@ const (
 	bcmediaADPCM       = 0x62773130
 	bcmediaADPCMHeader = 0x0100
 	bcmediaPadSize     = 8
+
+	// Sanity limits for sizes read from the stream. A 4K keyframe is well
+	// below 8 MiB and the AI box header is a few hundred bytes; anything
+	// larger is corrupt data, and waiting for it would grow the buffer forever.
+	bcmediaMaxPayload = 8 << 20
+	bcmediaMaxExtra   = 64 << 10
+	// The buffer never needs to hold more than one maximal packet.
+	bcmediaMaxBuffered = 24 + bcmediaMaxExtra + bcmediaMaxPayload + bcmediaPadSize
 )
 
 // MediaParser incrementally parses the bcmedia byte stream carried by msg_id=3.
@@ -39,6 +47,11 @@ func (p *MediaParser) Append(data []byte) ([]MediaPacket, error) {
 			return out, err
 		}
 		if !ok {
+			// What is left is one incomplete packet, bounded by the size
+			// limits above; this guards against a path that forgets them.
+			if p.buf.Len() > bcmediaMaxBuffered {
+				return out, fmt.Errorf("bcmedia buffer exceeds %d bytes", bcmediaMaxBuffered)
+			}
 			return out, nil
 		}
 
@@ -101,6 +114,9 @@ func parseMediaPacket(buf []byte) (MediaPacket, int, bool, error) {
 			return MediaPacket{}, 0, false, nil
 		}
 		payloadSize := int(binary.LittleEndian.Uint16(buf[4:6]))
+		if payloadSize < 4 { // the 4-byte ADPCM header is part of the payload
+			return MediaPacket{}, 0, false, fmt.Errorf("adpcm payload size %d too small", payloadSize)
+		}
 		total := 8 + payloadSize + padLen(payloadSize)
 		if len(buf) < total {
 			return MediaPacket{}, 0, false, nil
@@ -131,8 +147,17 @@ func parseVideoFrame(buf []byte, iframe bool) (MediaPacket, int, bool, error) {
 		return MediaPacket{}, 0, false, fmt.Errorf("unsupported video codec %q", codec)
 	}
 
-	payloadSize := int(binary.LittleEndian.Uint32(buf[8:12]))
-	additionalHeaderSize := int(binary.LittleEndian.Uint32(buf[12:16]))
+	rawPayload := binary.LittleEndian.Uint32(buf[8:12])
+	rawExtra := binary.LittleEndian.Uint32(buf[12:16])
+	// Checked before int conversion: a corrupt size would otherwise make the
+	// parser wait for gigabytes that never come.
+	if rawPayload > bcmediaMaxPayload {
+		return MediaPacket{}, 0, false, fmt.Errorf("video payload size %d too large", rawPayload)
+	}
+	if rawExtra > bcmediaMaxExtra {
+		return MediaPacket{}, 0, false, fmt.Errorf("video additional header size %d too large", rawExtra)
+	}
+	payloadSize, additionalHeaderSize := int(rawPayload), int(rawExtra)
 	microseconds := binary.LittleEndian.Uint32(buf[16:20])
 
 	total := 24 + additionalHeaderSize + payloadSize + padLen(payloadSize)

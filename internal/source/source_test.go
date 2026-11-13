@@ -143,3 +143,35 @@ func TestSourceNotConnected(t *testing.T) {
 	err := src.AddConsumer(addCtx, newRecorder())
 	require.ErrorContains(t, err, "offline")
 }
+
+// failingProducer refuses backchannel tracks.
+type failingProducer struct{ *fakeProducer }
+
+func (p failingProducer) AddTrack(*core.Media, *core.Codec, *core.Receiver) error {
+	return errors.New("no talkback")
+}
+
+// A consumer whose backchannel fails is not left half added: its video
+// output is removed again and nothing is re-attached on a reconnect.
+func TestAddConsumerRollback(t *testing.T) {
+	src := New("main", func() (Producer, error) {
+		return failingProducer{newFakeProducer()}, nil
+	}, zerolog.Nop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go src.Run(ctx)
+
+	addCtx, addCancel := context.WithTimeout(ctx, time.Second)
+	defer addCancel()
+	require.ErrorContains(t, src.AddConsumer(addCtx, newRecorder()), "no talkback")
+
+	src.mu.Lock()
+	defer src.mu.Unlock()
+	require.Empty(t, src.backs)
+	require.NotEmpty(t, src.tracks)
+	for _, f := range src.tracks {
+		f.mu.Lock()
+		require.Empty(t, f.outs)
+		f.mu.Unlock()
+	}
+}

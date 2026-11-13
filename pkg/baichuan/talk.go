@@ -78,7 +78,6 @@ type talkExtension struct {
 type TalkSession struct {
 	client          *Client
 	channel         uint8
-	msgNum          uint16
 	binaryExtension []byte
 	sampleRate      int
 	samplesPerBlock int
@@ -174,7 +173,6 @@ func (c *Client) StartTalk(ctx context.Context, channel uint8) (*TalkSession, er
 	return &TalkSession{
 		client:          c,
 		channel:         channel,
-		msgNum:          c.reserveMessageNumber(),
 		binaryExtension: binaryExtension,
 		sampleRate:      int(cfg.AudioConfig.SampleRate),
 		samplesPerBlock: samplesPerBlock,

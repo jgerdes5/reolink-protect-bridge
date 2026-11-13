@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// maxUnackedPackets bounds sentPackets (about 1.3 MiB at the default MTU).
+const maxUnackedPackets = 1024
+
 type uidSession struct {
 	conn       *net.UDPConn
 	remoteAddr *net.UDPAddr
@@ -310,6 +313,12 @@ func (s *uidSession) readLoop() {
 				s.recvMu.Unlock()
 				continue
 			}
+			// and far-future ids: they could never become contiguous and
+			// would only fill recvPackets
+			if s.hasConsumed && pkt.PacketID-s.consumedID > udpRecvWindow {
+				s.recvMu.Unlock()
+				continue
+			}
 			if _, ok := s.recvPackets[pkt.PacketID]; !ok {
 				s.recvPackets[pkt.PacketID] = append([]byte(nil), pkt.Payload...)
 			}
@@ -365,7 +374,14 @@ func (s *uidSession) writeLoop() {
 
 			s.sentMu.Lock()
 			s.sentPackets[packetID] = packet
+			unacked := len(s.sentPackets)
 			s.sentMu.Unlock()
+			// Every unacked packet is resent each tick; a camera that has
+			// stopped acking this many is gone, so end the session.
+			if unacked > maxUnackedPackets {
+				s.shutdown(fmt.Errorf("uid: %d packets not acknowledged", unacked))
+				return
+			}
 
 		case <-ticker.C:
 			s.sentMu.Lock()

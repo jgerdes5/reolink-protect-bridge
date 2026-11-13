@@ -23,6 +23,7 @@ type Client struct {
 
 	stateMu       sync.RWMutex
 	mode          EncryptionMode
+	negotiated    bool // the nonce reply carried an encryption code (0xDDxx)
 	aesKey        [16]byte
 	hasAESKey     bool
 	binaryMu      sync.RWMutex
@@ -219,8 +220,10 @@ func (c *Client) Login(ctx context.Context) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
+	// Keep what the camera negotiated in its nonce reply (None, BC or AES).
+	// Only a camera that did not say falls back to AES, as before.
 	c.stateMu.Lock()
-	if c.hasAESKey {
+	if c.hasAESKey && !c.negotiated {
 		c.mode = EncryptionAES
 	}
 	c.stateMu.Unlock()
@@ -379,14 +382,6 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 
 				parsed, err := parser.Append(msg.Payload)
 				if err != nil {
-					xmlSnippet := msg.XML
-					if len(xmlSnippet) > 160 {
-						xmlSnippet = xmlSnippet[:160]
-					}
-					prefixLen := len(msg.Payload)
-					if prefixLen > 32 {
-						prefixLen = 32
-					}
 					// Reset the parser and continue instead of killing the connection.
 					// This allows recovery from occasional corrupt/unexpected bytes.
 					parser = MediaParser{}
@@ -490,12 +485,40 @@ func (c *Client) sendNoReply(req request) error {
 }
 
 func (c *Client) writeRequest(req request) error {
+	if forbiddenMsgIDs[req.MsgID] {
+		return fmt.Errorf("baichuan: msg id %d is never sent by this bridge", req.MsgID)
+	}
 	payload := c.encodeRequest(req)
 
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
+	// A camera that stops reading (e.g. WiFi gone without a FIN) must not
+	// block the writer, and with it every caller, forever.
+	if conn, ok := c.transport.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = conn.SetWriteDeadline(time.Now().Add(c.cfg.Timeout))
+	}
 	_, err := c.transport.Write(payload)
 	return err
+}
+
+// forbiddenMsgIDs are commands that ring the chime, play sounds on the
+// doorbell, reboot it or change its chime settings. The bridge has no use
+// for them; refusing them here keeps a bug or a GetConfig/SetConfig caller
+// from ever sending one.
+var forbiddenMsgIDs = map[uint32]bool{
+	23:  true, // reboot
+	99:  true,
+	231: true,
+	263: true, // play audio file
+	349: true, // quick reply play
+	350: true,
+	428: true,
+	483: true,
+	484: true, // DingDong (chime) options
+	485: true,
+	487: true, // DingDong set
+	610: true, // DingDong silent set
+	619: true,
 }
 
 func (c *Client) reserveMessageNumber() uint16 {
@@ -516,14 +539,20 @@ func (c *Client) setNegotiatedEncryption(code uint16) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
 
+	// 0x12 is "full AES" (neolink, reolink_aio): XML is AES like 0x02, and
+	// until the key exists AES mode falls back to BC, so the nonce reply
+	// decodes the same either way.
 	switch byte(code) { //#nosec G115
 	case 0x00:
 		c.mode = EncryptionNone
-	case 0x01, 0x12:
+	case 0x01:
 		c.mode = EncryptionBC
-	case 0x02, 0x03:
+	case 0x02, 0x03, 0x12:
 		c.mode = EncryptionAES
+	default:
+		return
 	}
+	c.negotiated = true
 }
 
 func streamParams(stream Stream) (uint8, uint32) {

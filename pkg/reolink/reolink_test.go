@@ -184,3 +184,53 @@ func TestTalkbackSecondSession(t *testing.T) {
 		t.Fatalf("third session: state %q, packets %d", c.sender.State(), c.sender.Packets)
 	}
 }
+
+func TestIsUID(t *testing.T) {
+	tests := map[string]bool{
+		"95270000ABCDEFGH":           true,
+		"95270000ABCDEFGHIJ":         true,
+		"192.168.1.20":               false,
+		"localhost":                  false,
+		"reolink-doorbell":           false, // hostname, not a UID
+		"reolinkdoorbell1":           false, // lowercase
+		"fe80::1234:5678:9abc:def0":  false, // IPv6 literal
+		"2001:DB8:0:0:0:0:0:1":       false,
+		"95270000ABCDEFG":            false, // too short
+		"doorbell.home.arpa":         false,
+		"FE80000000000000ABCDEF0123": true, // UID-shaped, not an IP
+	}
+	for host, want := range tests {
+		if got := isUID(host); got != want {
+			t.Errorf("isUID(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
+// A connection that stays up while the stream freezes must end Start, so the
+// source reconnects.
+func TestStartMediaWatchdog(t *testing.T) {
+	old := mediaTimeout
+	mediaTimeout = 50 * time.Millisecond
+	defer func() { mediaTimeout = old }()
+
+	c := &Client{
+		receivers: []*core.Receiver{
+			core.NewReceiver(&core.Media{Kind: core.KindVideo}, &core.Codec{Name: core.CodecH264}),
+		},
+		reader: &baichuan.MediaReader{
+			Packets: make(chan baichuan.MediaPacket), // never sends, never closes
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Start() }()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Start() = nil, want a no-media error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start() did not return on a frozen stream")
+	}
+}

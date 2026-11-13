@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -102,10 +103,7 @@ func Dial(rawURL string) (*Client, error) {
 		cfg.Password, _ = u.User.Password()
 	}
 
-	host := u.Hostname()
-	if strings.Contains(host, ".") || host == "localhost" {
-		cfg.Host = host
-	} else if len(host) >= 15 { // UID usually long
+	if host := u.Hostname(); isUID(host) {
 		cfg.UID = host
 	} else {
 		cfg.Host = host
@@ -281,6 +279,22 @@ func (c *Client) SetupBackchannel() error {
 	c.talkSession = session
 	c.talkEncoder = &baichuan.ADPCMEncoder{}
 	return nil
+}
+
+// isUID reports whether host is a Reolink UID (e.g. 95270000ABCDEFGH) rather
+// than an IP or hostname. UIDs are 16+ uppercase letters and digits; anything
+// else (reolink-doorbell, an IPv6 literal) is dialled directly instead of
+// being looked up by UDP broadcast.
+func isUID(host string) bool {
+	if len(host) < 16 || net.ParseIP(host) != nil {
+		return false
+	}
+	for _, r := range host {
+		if (r < '0' || r > '9') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) host() string {

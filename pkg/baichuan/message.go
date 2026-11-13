@@ -7,6 +7,11 @@ import (
 	"sync"
 )
 
+// maxBodyLen caps a message body. Media messages are a few hundred KiB at
+// most; a larger length is a corrupt header, and allocating it could take
+// gigabytes. Failing here closes the connection, which then reconnects.
+const maxBodyLen = 16 << 20
+
 type request struct {
 	MsgID      uint32
 	ChannelID  uint8
@@ -71,6 +76,9 @@ func (c *Client) readMessage() (*Message, error) {
 		header.PayloadOffset = binary.LittleEndian.Uint32(offsetBuf)
 	}
 
+	if header.BodyLen > maxBodyLen {
+		return nil, fmt.Errorf("baichuan body length %d exceeds %d", header.BodyLen, maxBodyLen)
+	}
 	body := make([]byte, header.BodyLen)
 	if _, err := io.ReadFull(c.transport, body); err != nil {
 		return nil, err

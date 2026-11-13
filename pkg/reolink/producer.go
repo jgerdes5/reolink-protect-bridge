@@ -171,6 +171,10 @@ func (c *Client) GetTrack(media *core.Media, codec *core.Codec) (*core.Receiver,
 	return track, nil
 }
 
+// mediaTimeout is how long Start waits for any media packet. The doorbell
+// sends video at 15+ fps and a keyframe every few seconds.
+var mediaTimeout = 15 * time.Second
+
 func (c *Client) Start() error {
 	c.logDebug("Start() called, receivers=%d reader=%v", len(c.receivers), c.reader != nil)
 
@@ -203,8 +207,23 @@ func (c *Client) Start() error {
 		c.probeIFrame = nil
 	}
 
+	// A camera can keep the connection (and its pings) alive while the
+	// stream itself has frozen. Return then, so the caller reconnects.
+	watchdog := time.NewTimer(mediaTimeout)
+	defer watchdog.Stop()
+
 	for {
-		packet, ok := <-c.reader.Packets
+		var packet baichuan.MediaPacket
+		var ok bool
+		select {
+		case packet, ok = <-c.reader.Packets:
+		case <-watchdog.C:
+			c.logWarn("no media for %s, reconnecting", mediaTimeout)
+			return fmt.Errorf("reolink: no media for %s", mediaTimeout)
+		}
+		if ok {
+			watchdog.Reset(mediaTimeout)
+		}
 		if !ok {
 			c.talkMu.Lock()
 			closed := c.closed

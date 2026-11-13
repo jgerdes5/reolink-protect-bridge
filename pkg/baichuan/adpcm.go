@@ -54,8 +54,12 @@ func (d *ADPCMDecoder) Decode(data []byte) []int16 {
 	out := make([]int16, len(payload)*2)
 	for i, b := range payload {
 		// DVI4 packs the first sample in the high nibble and the second in the low nibble.
-		nibbles := []byte{(b >> 4) & 0x0F, b & 0x0F}
-		for j, nibble := range nibbles {
+		hi, lo := (b>>4)&0x0F, b&0x0F
+		for j := 0; j < 2; j++ {
+			nibble := hi
+			if j == 1 {
+				nibble = lo
+			}
 			step := imaStepTable[d.index]
 			diff := step >> 3
 			if (nibble & 1) != 0 {
