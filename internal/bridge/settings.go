@@ -533,12 +533,9 @@ const (
 )
 
 // applyKeyframes sets the keyframe interval (gop, in frames) of both streams
-// to half a second with FastSwitch, else to one second, within the range the
-// doorbell reports. Protect's live view starts a stream at its next keyframe
-// when the viewer switches quality; a UniFi camera makes one on request
-// (ForceIDR, from Protect's feedback on the stream socket), the Reolink
-// can't by itself, but the bridge passes Protect's requests on as
-// IFRAME_REQUEST (keyframe.go); the interval is the fallback.
+// to one second, within the range the doorbell reports, as a UniFi camera
+// streams. Live view and quality switches don't wait for it: the bridge passes
+// Protect's keyframe requests on (keyframe.go).
 func (b *Bridge) applyKeyframes(ctx context.Context) {
 	d := b.opts.Doorbell
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -549,38 +546,33 @@ func (b *Bridge) applyKeyframes(ctx context.Context) {
 		return
 	}
 	defer client.Close()
-	err = update(ctx, client, msgEncGet, msgEncSet, uint8(d.Channel), nil, gopChange(b.opts.FastSwitch), "keyframe interval")
+	err = update(ctx, client, msgEncGet, msgEncSet, uint8(d.Channel), nil, gopChange, "keyframe interval")
 	if err != nil {
 		log.Warn().Err(err).Msg("[settings] keyframe interval")
 	}
 }
 
-// gopChange sets mainStream/subStream gop/cur to fps/2 (fast) or fps frames,
-// clamped to gop/min..max.
-func gopChange(fast bool) func(*baichuan.Node) bool {
-	return func(b *baichuan.Node) bool {
-		changed := false
-		for _, stream := range []string{"mainStream", "subStream"} {
-			fps, _ := strconv.Atoi(b.Value("Compression/" + stream + "/frame"))
-			if fps <= 0 {
-				continue
-			}
-			want := fps
-			if fast {
-				want = (fps + 1) / 2
-			}
-			if lo, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/min")); err == nil && want < lo {
-				want = lo
-			}
-			if hi, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/max")); err == nil && hi > 0 && want > hi {
-				want = hi
-			}
-			if b.Set("Compression/"+stream+"/gop/cur", strconv.Itoa(want)) {
-				changed = true
-			}
+// gopChange sets mainStream/subStream gop/cur to fps frames, clamped to
+// gop/min..max.
+func gopChange(b *baichuan.Node) bool {
+	changed := false
+	for _, stream := range []string{"mainStream", "subStream"} {
+		fps, _ := strconv.Atoi(b.Value("Compression/" + stream + "/frame"))
+		if fps <= 0 {
+			continue
 		}
-		return changed
+		want := fps
+		if lo, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/min")); err == nil && want < lo {
+			want = lo
+		}
+		if hi, err := strconv.Atoi(b.Value("Compression/" + stream + "/gop/max")); err == nil && hi > 0 && want > hi {
+			want = hi
+		}
+		if b.Set("Compression/"+stream+"/gop/cur", strconv.Itoa(want)) {
+			changed = true
+		}
 	}
+	return changed
 }
 
 // Privacy masks (Shelter, 52/53) and the overlay (OSD, 44/45), from the D340W

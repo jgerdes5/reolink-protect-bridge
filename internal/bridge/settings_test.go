@@ -163,21 +163,17 @@ func TestSmartEnabled(t *testing.T) {
 }
 
 const encXML = `<body><Compression version="1.1"><channelId>0</channelId>
-<mainStream><audio>1</audio><width>2560</width><height>1920</height><frame>20</frame><bitRate>6144</bitRate><gop><cur>20</cur><max>80</max><min>4</min></gop></mainStream>
-<subStream><audio>1</audio><width>640</width><height>480</height><frame>15</frame><bitRate>512</bitRate><gop><cur>15</cur><max>60</max><min>10</min></gop></subStream>
+<mainStream><audio>1</audio><width>2560</width><height>1920</height><frame>20</frame><bitRate>6144</bitRate><gop><cur>10</cur><max>80</max><min>4</min></gop></mainStream>
+<subStream><audio>1</audio><width>640</width><height>480</height><frame>15</frame><bitRate>512</bitRate><gop><cur>8</cur><max>12</max><min>4</min></gop></subStream>
 </Compression></body>`
 
 func TestGopChange(t *testing.T) {
 	b := parse(t, encXML)
-	require.True(t, gopChange(true)(b))
-	require.Equal(t, "10", b.Value("Compression/mainStream/gop/cur")) // 20 fps -> 0.5 s
-	require.Equal(t, "10", b.Value("Compression/subStream/gop/cur"))  // 15 fps -> 8, raised to the minimum 10
+	require.True(t, gopChange(b))
+	require.Equal(t, "20", b.Value("Compression/mainStream/gop/cur")) // 20 fps -> 1 s (from an old 0.5 s)
+	require.Equal(t, "12", b.Value("Compression/subStream/gop/cur"))  // 15 fps, limited to the maximum 12
 	require.Equal(t, "1", b.Value("Compression/mainStream/audio"))    // nothing else touched
-
-	require.True(t, gopChange(false)(b)) // back to 1 s
-	require.Equal(t, "20", b.Value("Compression/mainStream/gop/cur"))
-	require.Equal(t, "15", b.Value("Compression/subStream/gop/cur"))
-	require.False(t, gopChange(false)(b))
+	require.False(t, gopChange(b))
 }
 
 const shelterXML = `<body><Shelter version="1.1"><channelId>0</channelId><enable>1</enable><shelterList>

@@ -45,9 +45,6 @@ type Camera struct {
 	Events   bool   `json:"events"`
 	Talkback bool   `json:"talkback"`
 	Settings bool   `json:"settings"` // apply Protect's camera settings to the doorbell
-	// FastSwitch shortens the doorbell's keyframe interval to 0.5 s, so
-	// Protect's live view switches quality without a black second.
-	FastSwitch bool `json:"fastSwitch"`
 }
 
 // Identity is what Protect knows the camera by. It is generated once and only
@@ -81,12 +78,11 @@ func Default() Config {
 	return Config{
 		Doorbell: Doorbell{Username: "admin"},
 		Camera: Camera{
-			Name:       "Doorbell",
-			Ring:       "camera",
-			Events:     true,
-			Talkback:   true,
-			Settings:   true,
-			FastSwitch: true,
+			Name:     "Doorbell",
+			Ring:     "camera",
+			Events:   true,
+			Talkback: true,
+			Settings: true,
 		},
 		Web:    Web{Listen: ":8080"},
 		FFmpeg: "ffmpeg",
@@ -221,15 +217,14 @@ func (c Config) Options() bridge.Options {
 			Password: c.Protect.Password,
 			Token:    c.Protect.Token,
 		},
-		Name:       strings.TrimSpace(c.Camera.Name),
-		MAC:        c.Identity.MAC,
-		Cert:       c.Identity.Cert,
-		Ring:       c.Camera.Ring,
-		Events:     c.Camera.Events,
-		Talkback:   c.Camera.Talkback,
-		Settings:   c.Camera.Settings,
-		FastSwitch: c.Camera.FastSwitch,
-		FFmpeg:     c.FFmpeg,
+		Name:     strings.TrimSpace(c.Camera.Name),
+		MAC:      c.Identity.MAC,
+		Cert:     c.Identity.Cert,
+		Ring:     c.Camera.Ring,
+		Events:   c.Camera.Events,
+		Talkback: c.Camera.Talkback,
+		Settings: c.Camera.Settings,
+		FFmpeg:   c.FFmpeg,
 	}
 }
 

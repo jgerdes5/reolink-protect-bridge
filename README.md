@@ -37,8 +37,6 @@ Protect app. No ONVIF, no third-party camera entry.
   low-quality stream, which is always H.264, with ffmpeg
 - Quick start of live view and quality switching: when Protect asks for a
   keyframe, the bridge asks the doorbell for one
-- Faster switching between high and low quality (optional, shorter keyframe
-  interval as a fallback)
 - Web page for setup, with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
 - Works with the UniFi Protect integration in Home Assistant, which sees it as
@@ -140,7 +138,7 @@ Prebuilt binaries are also attached to each
 If the doorbell is already in Protect via ONVIF, remove that entry first,
 otherwise you'll have it twice.
 
-The **Options** page lets you change the camera name and turn talkback, events, settings sync and fast quality switching on or off.
+The **Options** page lets you change the camera name and turn talkback, events and settings sync on or off.
 
 ## Ports
 

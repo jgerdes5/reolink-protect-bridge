@@ -61,10 +61,6 @@ type Options struct {
 	Events   bool
 	Talkback bool
 	Settings bool // apply Protect's camera settings to the doorbell
-	// FastSwitch sets the doorbell's keyframe interval to 0.5 s (else 1 s):
-	// Protect starts a viewer only at a keyframe, and unlike a UniFi camera the
-	// Reolink can't make one on request.
-	FastSwitch bool
 
 	FFmpeg string // ffmpeg binary, default "ffmpeg"
 }
