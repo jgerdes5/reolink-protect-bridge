@@ -1,7 +1,10 @@
 package bridge
 
 import (
+	"bytes"
+	"encoding/base64"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
@@ -112,7 +115,7 @@ func TestMotionChange(t *testing.T) {
 	b := parse(t, mdXML)
 	left := unifi.Zone{Coord: []float64{0, 0, 500, 0, 500, 1000, 0, 1000}, Level: 30} // sensitivity 70
 	require.True(t, motionChange(&unifi.Motion{Enable: new(bool), Zones: map[string]unifi.Zone{"1": left}})(b))
-	require.Equal(t, "0", b.Value("MD/enable"))
+	require.Equal(t, "1", b.Value("MD/enable"))                          // Protect's enable is the enhanced algorithm, not motion detection
 	require.Equal(t, "16", b.Value("MD/sensInfoNew/sensitivityDefault")) // ui 1+round(34.3)=35, wire 51-35
 	cells, err := baichuan.DecodeArea(b.Value("MD/scope/valueTable"), 96, 64)
 	require.NoError(t, err)
@@ -121,6 +124,23 @@ func TestMotionChange(t *testing.T) {
 	require.False(t, cells[48])       // right half
 	require.True(t, cells[63*96+10])  // bottom row, left
 	require.False(t, cells[63*96+95]) // bottom row, right
+
+	// no zones: the doorbell's area stays
+	before := b.Value("MD/scope/valueTable")
+	require.False(t, motionChange(&unifi.Motion{})(b))
+	require.Equal(t, before, b.Value("MD/scope/valueTable"))
+}
+
+// The D340W's grid: an 80x60 picture in a 96x64 table. A full-frame zone
+// gives exactly the table the doorbell itself stores for "everything".
+func TestMotionChangeD340W(t *testing.T) {
+	row := append(bytes.Repeat([]byte{0xff}, 10), 0, 0)
+	want := append(bytes.Repeat(row, 60), make([]byte, 4*12)...)
+	xml := strings.Replace(strings.Replace(mdXML, "<width>96</width>", "<width>80</width>", 1), "<height>64</height>", "<height>60</height>", 1)
+	b := parse(t, xml)
+	full := unifi.Zone{Coord: []float64{0, 0, 1000, 0, 1000, 1000, 0, 1000}, Level: 50}
+	motionChange(&unifi.Motion{Zones: map[string]unifi.Zone{"1": full}})(b)
+	require.Equal(t, base64.StdEncoding.EncodeToString(want), b.Value("MD/scope/valueTable"))
 }
 
 func TestAIAreaChange(t *testing.T) {
@@ -282,10 +302,11 @@ func TestDayNightChange(t *testing.T) {
 	require.True(t, dayNightChange(custom(10))(b))
 	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur"))
 
+	// not custom: the doorbell's threshold stays (the D340W ignores "default")
 	auto := &unifi.ISP{IrLedMode: sptr("auto"), IrLedLevel: iptr(255), IcrSwitchMode: sptr("sensitivity")}
-	require.True(t, dayNightChange(auto)(b))
-	require.Equal(t, "default", b.Value("DayNightThreshold/threshold"))
-	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur")) // kept for the next custom
+	require.False(t, dayNightChange(auto)(b))
+	require.Equal(t, "custom", b.Value("DayNightThreshold/threshold"))
+	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur"))
 }
 
 // Privacy mode on top of more zones than the doorbell stores: the full-frame

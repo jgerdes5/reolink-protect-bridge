@@ -543,10 +543,12 @@ func applyMotion(ctx context.Context, c *baichuan.Client, ch uint8, m *unifi.Mot
 // motionChange returns the change for motion detection.
 func motionChange(m *unifi.Motion) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
-		changed := false
-		if m.Enable != nil && b.Set("MD/enable", boolStr(*m.Enable)) {
-			changed = true
-		}
+		// m.Enable is not "motion detection on": Protect sends
+		// enableMotionDetection && algorithm == enhanced, so false with its
+		// default (stable) algorithm. The bridge needs the doorbell's motion
+		// detection for Protect's motion events, so it is kept on (this also
+		// undoes earlier versions that switched it off).
+		changed := b.Set("MD/enable", "1")
 		var zones []unifi.Zone
 		sens := -1
 		for _, z := range m.Zones {
@@ -556,9 +558,17 @@ func motionChange(m *unifi.Motion) func(*baichuan.Node) bool {
 		if sens >= 0 && b.Set("MD/sensInfoNew/sensitivityDefault", strconv.Itoa(mdSensitivity(sens))) {
 			changed = true
 		}
+		// The table is columns x rows, of which only the first width x height
+		// cells are the picture (D340W: 80x60 in 96x64); the rest stays 0.
+		// Without zones the doorbell's area is left alone.
 		cols, _ := strconv.Atoi(b.Value("MD/scope/columns"))
 		rows, _ := strconv.Atoi(b.Value("MD/scope/rows"))
-		if cols > 0 && rows > 0 && b.Set("MD/scope/valueTable", baichuan.EncodeArea(rasterize(zones, cols, rows), cols, rows)) {
+		w, _ := strconv.Atoi(b.Value("MD/width"))
+		h, _ := strconv.Atoi(b.Value("MD/height"))
+		if w <= 0 || w > cols || h <= 0 || h > rows {
+			w, h = cols, rows
+		}
+		if len(zones) > 0 && cols > 0 && rows > 0 && b.Set("MD/scope/valueTable", baichuan.EncodeArea(rasterizeIn(zones, w, h, cols, rows), cols, rows)) {
 			changed = true
 		}
 		return changed
@@ -638,11 +648,17 @@ func mdSensitivity(s int) int {
 // rasterize marks the grid cells whose centre lies in any of the zones
 // (Protect polygons in 0-1000).
 func rasterize(zones []unifi.Zone, cols, rows int) []bool {
+	return rasterizeIn(zones, cols, rows, cols, rows)
+}
+
+// rasterizeIn marks the cells of a w x h picture grid stored in a cols x rows
+// table (row stride cols); cells outside the picture stay unset.
+func rasterizeIn(zones []unifi.Zone, w, h, cols, rows int) []bool {
 	cells := make([]bool, cols*rows)
-	for r := 0; r < rows; r++ {
-		y := (float64(r) + 0.5) * 1000 / float64(rows)
-		for c := 0; c < cols; c++ {
-			x := (float64(c) + 0.5) * 1000 / float64(cols)
+	for r := 0; r < h; r++ {
+		y := (float64(r) + 0.5) * 1000 / float64(h)
+		for c := 0; c < w; c++ {
+			x := (float64(c) + 0.5) * 1000 / float64(w)
 			for _, z := range zones {
 				if inPolygon(z.Coord, x, y) {
 					cells[r*cols+c] = true
@@ -927,7 +943,9 @@ var nightLux = [11]float64{0.5, 1, 3, 5, 7, 10, 12, 15, 20, 25, 30}
 func dayNightChange(isp *unifi.ISP) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
 		if isp.NightVision() != "custom" || isp.IcrCustomValue == nil {
-			return b.Set("DayNightThreshold/threshold", "default")
+			// The D340W ignores "default" (it keeps "custom"), so writing it
+			// only repeats on every change: leave the doorbell's threshold.
+			return false
 		}
 		lo, err1 := strconv.Atoi(b.Value("DayNightThreshold/thresholdval/min"))
 		hi, err2 := strconv.Atoi(b.Value("DayNightThreshold/thresholdval/max"))
