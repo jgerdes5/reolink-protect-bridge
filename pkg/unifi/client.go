@@ -41,9 +41,10 @@ type Camera struct {
 
 	// Channel reports what a video channel ("video1".."video3") carries.
 	Channel func(name string) Channel
-	// Start streams a channel to addr (host:port) as streamName. It replaces a
-	// running stream of the same channel. Stop ends it.
-	Start func(channel, addr, streamName string)
+	// Start streams a channel to addr (host:port) as streamName, in the codec
+	// Protect asks for ("h264" or "h265", the camera's videoCodec). It replaces
+	// a running stream of the same channel. Stop ends it.
+	Start func(channel, addr, streamName, codec string)
 	Stop  func(channel string)
 	// Snapshot returns a current JPEG.
 	Snapshot func(ctx context.Context) ([]byte, error)
@@ -66,7 +67,8 @@ type Camera struct {
 	token       string
 	firmware    string // set by a pretended firmware upgrade
 	streamNames map[string]string
-	streaming   map[string]string   // channel -> addr|streamName currently started
+	streaming   map[string]string   // channel -> addr|streamName|codec currently started
+	codecs      map[string]string   // channel -> codec Protect asked for
 	dests       map[string][]string // channel -> destinations Protect gave it
 
 	httpOnce sync.Once
@@ -462,6 +464,7 @@ func (c *Camera) handle(ctx context.Context, msg *Message) error {
 func (c *Camera) changeVideoSettings(payload json.RawMessage) map[string]any {
 	var p struct {
 		Video map[string]*struct {
+			Type         string `json:"type"` // the camera's videoCodec
 			AvSerializer *struct {
 				Destinations []string `json:"destinations"`
 				Parameters   *struct {
@@ -487,7 +490,15 @@ func (c *Camera) changeVideoSettings(payload json.RawMessage) map[string]any {
 
 	for _, name := range []string{"video1", "video2", "video3"} {
 		v := p.Video[name]
-		if v == nil || v.AvSerializer == nil {
+		if v == nil {
+			continue
+		}
+		if v.Type == "h264" || v.Type == "h265" {
+			c.mu.Lock()
+			c.codecs[name] = v.Type
+			c.mu.Unlock()
+		}
+		if v.AvSerializer == nil {
 			continue
 		}
 		s := v.AvSerializer
@@ -514,14 +525,18 @@ func (c *Camera) startChannel(name, addr, streamName string, dests []string) {
 	c.mu.Lock()
 	c.dests[name] = dests
 	c.streamNames[name] = streamName
-	key := addr + "|" + streamName
+	codec := c.codecs[name]
+	if codec == "" {
+		codec = "h264"
+	}
+	key := addr + "|" + streamName + "|" + codec // a codec switch restarts the stream
 	same := c.streaming[name] == key
 	c.streaming[name] = key
 	c.mu.Unlock()
 
 	if !same {
-		c.Log.Info().Msgf("[unifi] %s: start %s -> %s (%s)", c.Name, name, addr, streamName)
-		c.Start(name, addr, streamName)
+		c.Log.Info().Msgf("[unifi] %s: start %s -> %s (%s, %s)", c.Name, name, addr, streamName, codec)
+		c.Start(name, addr, streamName, codec)
 	}
 }
 
@@ -682,6 +697,7 @@ func (c *Camera) init() {
 	if c.streamNames == nil {
 		c.streamNames = map[string]string{}
 		c.streaming = map[string]string{}
+		c.codecs = map[string]string{}
 		c.dests = map[string][]string{}
 	}
 }
@@ -697,9 +713,12 @@ func (c *Camera) identity() Identity {
 }
 
 func (c *Camera) channel(name string) Channel {
-	ch := Channel{Width: 1920, Height: 1080, FPS: 15}
+	ch := Channel{Width: 1920, Height: 1080, FPS: 15, Codec: "h264"}
 	if c.Channel != nil {
 		got := c.Channel(name)
+		if got.Codec != "" {
+			ch.Codec = got.Codec
+		}
 		if got.Width > 0 && got.Height > 0 {
 			ch.Width, ch.Height = got.Width, got.Height
 		}

@@ -44,7 +44,7 @@ func connectedCamera(t *testing.T, cam *Camera) (*fakeProtect, *websocket.Conn) 
 	cam.Doorbell, cam.Identity = true, G4Doorbell
 	cam.Token = func(context.Context, bool) (string, error) { return "good", nil }
 	cam.Channel = func(string) Channel { return Channel{Width: 640, Height: 480, FPS: 15} }
-	cam.Start = func(string, string, string) {}
+	cam.Start = func(string, string, string, string) {}
 	cam.Stop = func(string) {}
 	cam.Log = zerolog.New(zerolog.NewTestWriter(t)).Level(zerolog.DebugLevel)
 

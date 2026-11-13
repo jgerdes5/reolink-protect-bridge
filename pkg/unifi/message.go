@@ -24,6 +24,7 @@ type Message struct {
 // (video1 = high, video2 = medium, video3 = low quality).
 type Channel struct {
 	Width, Height, FPS int
+	Codec              string // what the source delivers: "h264" (default) or "h265"
 }
 
 // Identity is what Protect uses to recognise the camera model. Since Protect 3
@@ -44,6 +45,16 @@ func rfc3339ms(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05.000Z")
 }
 
+// videoCodecs offers H.265 only if the doorbell's main stream is H.265:
+// Protect may switch an H.265-capable camera to H.265 by itself (on adoption,
+// when most cameras use it), and the main stream is too large to transcode.
+func (c *Camera) videoCodecs() []string {
+	if c.channel("video1").Codec == "h265" {
+		return []string{"h264", "h265"}
+	}
+	return []string{"h264"}
+}
+
 // featureFlags are the camera capabilities sent in the hello. Protect 7.3
 // reads only the short keys (FeatureFlagsModel.deserializeFromCamera): has*/can*
 // keys are ignored, and canAdjustIspSettings, hasWdr, hasMotionZones and
@@ -62,7 +73,7 @@ func (c *Camera) featureFlags() map[string]any {
 		// what Reolink's AI detects; lines and loitering are evaluated by the
 		// bridge from the doorbell's boxes (lineCrossing* unlock the line tab)
 		"smartDetect":    []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"},
-		"videoCodecs":    []string{"h264"},
+		"videoCodecs":    c.videoCodecs(),
 		"audioCodecs":    []string{"aac"},
 		"audioStyle":     []string{"nature"},
 		"horizontalFlip": true, // mirror
@@ -134,7 +145,20 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 	if c.hdr {
 		hdrMode = 1
 	}
+	requested := make(map[string]string, len(c.codecs))
+	for k, v := range c.codecs {
+		requested[k] = v
+	}
 	c.mu.Unlock()
+
+	// The codec each channel is streamed in: what Protect asked for (the
+	// bridge transcodes if the doorbell sends something else), else the source's.
+	codec := func(name string, ch Channel) string {
+		if v := requested[name]; v != "" {
+			return v
+		}
+		return ch.Codec
+	}
 
 	track := func(name string, ch Channel, streamID, ordinal int, desc string, cbr, vbrMax, rangeMax int) map[string]any {
 		var params any
@@ -169,7 +193,7 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 			"sourceId":                 ordinal,
 			"streamId":                 streamID,
 			"streamOrdinal":            ordinal,
-			"type":                     "h264",
+			"type":                     codec(name, ch),
 			"validBitrateRangeMax":     rangeMax,
 			"validBitrateRangeMin":     32000,
 			"validFpsValues":           []int{1, 2, 3, 4, 5, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24, 25, 30},
@@ -191,7 +215,7 @@ func (c *Camera) videoSettings(dst map[string][]string) map[string]any {
 		"firmwarePath": "/lib/firmware/",
 		"video": map[string]any{
 			"enableHrd": false, "hdrMode": hdrMode, "lowDelay": false,
-			"videoMode": "default", "videoCodec": "h264",
+			"videoMode": "default", "videoCodec": codec("video1", c.channel("video1")),
 			"mjpg": map[string]any{
 				"avSerializer": map[string]any{
 					"destinations": []string{"file:///tmp/snap.jpeg", "file:///tmp/snap_av.jpg"},

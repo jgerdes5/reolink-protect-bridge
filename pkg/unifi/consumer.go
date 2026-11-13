@@ -13,11 +13,12 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/aac"
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/pion/rtp"
 )
 
-// Consumer streams one go2rtc stream (H.264 + optional AAC) to Protect as UniFi
-// FLV. The bytes are only re-wrapped: no decoding, no encoding.
+// Consumer streams one go2rtc stream (H.264 or H.265, optional AAC) to Protect
+// as UniFi FLV. The bytes are only re-wrapped: no decoding, no encoding.
 type Consumer struct {
 	core.Connection
 
@@ -27,6 +28,7 @@ type Consumer struct {
 	wr      io.Writer
 	mux     *muxer
 	video   *core.Codec
+	hevc    bool // video is H.265
 	audio   *core.Codec
 	started bool // first keyframe sent
 	vclock  trackClock
@@ -42,6 +44,8 @@ type Consumer struct {
 	err     error
 	done    chan struct{}
 	closer  atomic.Value // io.Closer of the writer, closed by Stop without c.mu
+	onStop  []func()
+	stopped sync.Once
 
 	now func() time.Time // for tests
 }
@@ -73,7 +77,7 @@ func NewConsumer(opts StreamOptions) *Consumer {
 		{
 			Kind:      core.KindVideo,
 			Direction: core.DirectionSendonly,
-			Codecs:    []*core.Codec{{Name: core.CodecH264}},
+			Codecs:    []*core.Codec{{Name: core.CodecH264}, {Name: core.CodecH265}},
 		},
 		{
 			Kind:      core.KindAudio,
@@ -108,6 +112,18 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 			sender.Handler = h264.RTPDepay(track.Codec, sender.Handler)
 		} else {
 			sender.Handler = h264.RepairAVCC(track.Codec, sender.Handler)
+		}
+
+	case core.CodecH265:
+		c.mu.Lock()
+		c.video, c.hevc = track.Codec, true
+		c.mu.Unlock()
+
+		sender.Handler = c.handleVideo
+		if track.Codec.IsRTP() {
+			sender.Handler = h265.RTPDepay(track.Codec, sender.Handler)
+		} else {
+			sender.Handler = h265.RepairAVCC(track.Codec, sender.Handler)
 		}
 
 	case core.CodecAAC:
@@ -172,6 +188,14 @@ func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
 	return int64(c.Send), c.err
 }
 
+// OnStop registers fn to run once when the consumer is stopped (to release
+// its source).
+func (c *Consumer) OnStop(fn func()) {
+	c.mu.Lock()
+	c.onStop = append(c.onStop, fn)
+	c.mu.Unlock()
+}
+
 // Stop ends WriteTo. The writer is closed first: a write blocked on a stalled
 // socket holds c.mu and would otherwise delay Stop by the write timeout.
 func (c *Consumer) Stop() error {
@@ -180,8 +204,15 @@ func (c *Consumer) Stop() error {
 	}
 	c.mu.Lock()
 	c.finish(nil)
+	onStop := c.onStop
 	c.mu.Unlock()
-	return c.Connection.Stop()
+	err := c.Connection.Stop()
+	c.stopped.Do(func() {
+		for _, fn := range onStop {
+			fn()
+		}
+	})
+	return err
 }
 
 // finish must be called with c.mu held.
@@ -203,12 +234,12 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 	}
 
 	c.frames++
-	key := h264.IsKeyframe(pkt.Payload)
+	if len(pkt.Payload) < 5 {
+		return
+	}
+	key := c.isKeyframe(pkt.Payload)
 	if key && c.width == 0 {
-		sps, _ := c.parameterSets(pkt.Payload)
-		if s := h264.DecodeSPS(sps); s != nil {
-			c.width, c.height = int(s.Width()), int(s.Height())
-		}
+		c.width, c.height = c.size(pkt.Payload)
 	}
 
 	if c.wr == nil {
@@ -233,13 +264,16 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 
 	payload := pkt.Payload
 	if key {
-		payload = c.replaceSPS(payload)
+		if !c.hevc {
+			payload = c.replaceSPS(payload)
+		}
 		b = c.mux.appendSync(b, at, now)
 	}
 
-	hdr := [5]byte{2<<4 | 7, 1} // inter frame, AVC NALU; composition time stays 0
+	// inter frame or keyframe, NALU; composition time stays 0
+	hdr := [5]byte{frameInter<<4 | c.codecID(), 1}
 	if key {
-		hdr[0] = 1<<4 | 7 // keyframe
+		hdr[0] = frameKey<<4 | c.codecID()
 	}
 
 	c.write(c.mux.appendTag(b, tagVideo, at, hdr[:], payload))
@@ -286,10 +320,8 @@ func (c *Consumer) write(b []byte) {
 }
 
 // appendInit appends the file header, onMetaData and the decoder configs. It is
-// called with the first keyframe, so missing SPS/PPS can be taken from it.
+// called with the first keyframe, so missing parameter sets can be taken from it.
 func (c *Consumer) appendInit(b []byte, keyframe []byte) []byte {
-	sps, pps := c.parameterSets(keyframe)
-
 	// Without an AudioSpecificConfig the AAC frames can't be decoded: send video only.
 	var audioConfig []byte
 	if c.audio != nil {
@@ -302,8 +334,12 @@ func (c *Consumer) appendInit(b []byte, keyframe []byte) []byte {
 	b = append(b, fileHeader(c.audio != nil)...)
 	b = c.mux.appendTag(b, tagScript, 0, ScriptData("onMetaData", c.metadata(c.width, c.height)))
 
-	if len(sps) > 0 && len(pps) > 0 {
-		config := append([]byte{1<<4 | 7, 0, 0, 0, 0}, h264.EncodeConfig(c.fixSPS(sps), pps)...)
+	if c.hevc {
+		if vps, sps, pps := c.hevcParameterSets(keyframe); len(vps) > 0 && len(sps) > 0 && len(pps) > 0 {
+			b = c.mux.appendTag(b, tagVideo, 0, hevcConfig(vps, sps, pps))
+		}
+	} else if sps, pps := c.parameterSets(keyframe); len(sps) > 0 && len(pps) > 0 {
+		config := append([]byte{frameKey<<4 | codecAVC, 0, 0, 0, 0}, h264.EncodeConfig(c.fixSPS(sps), pps)...)
 		b = c.mux.appendTag(b, tagVideo, 0, config)
 	}
 
@@ -457,7 +493,7 @@ func (c *Consumer) ffmpegMetadata(width, height int) ECMAArray {
 	if c.opts.FPS > 0 {
 		m = append(m, Prop{"framerate", c.opts.FPS})
 	}
-	m = append(m, Prop{"videocodecid", 7})
+	m = append(m, Prop{"videocodecid", int(c.codecID())})
 
 	if c.audio != nil {
 		m = append(m,
@@ -495,6 +531,89 @@ func parameterSets(avcc []byte) (sps, pps []byte) {
 		case h264.NALUTypeSPS:
 			sps = nalu
 		case h264.NALUTypePPS:
+			pps = nalu
+		}
+		avcc = avcc[4+size:]
+	}
+	return
+}
+
+// FLV video tag values. UniFi cameras carry H.265 under codec id 8 in
+// legacy-shaped tags, not as Enhanced-RTMP "hvc1" tags.
+const (
+	frameKey      = 1
+	frameInter    = 2
+	frameHEVCConf = 6 // the H.265 decoder config tag
+	codecAVC      = 7
+	codecHEVC     = 8
+)
+
+func (c *Consumer) codecID() byte {
+	if c.hevc {
+		return codecHEVC
+	}
+	return codecAVC
+}
+
+func (c *Consumer) isKeyframe(avcc []byte) bool {
+	if c.hevc {
+		return h265.IsKeyframe(avcc)
+	}
+	return h264.IsKeyframe(avcc)
+}
+
+// size reads the resolution from the SPS of the codec or a keyframe.
+func (c *Consumer) size(keyframe []byte) (width, height int) {
+	if c.hevc {
+		_, sps, _ := c.hevcParameterSets(keyframe)
+		if s := h265.DecodeSPS(sps); s != nil {
+			return int(s.Width()), int(s.Height())
+		}
+		return 0, 0
+	}
+	sps, _ := c.parameterSets(keyframe)
+	if s := h264.DecodeSPS(sps); s != nil {
+		return int(s.Width()), int(s.Height())
+	}
+	return 0, 0
+}
+
+// hevcParameterSets returns VPS, SPS and PPS from the codec, or else from a keyframe.
+func (c *Consumer) hevcParameterSets(keyframe []byte) (vps, sps, pps []byte) {
+	vps, sps, pps = h265.GetParameterSet(c.video.FmtpLine)
+	if len(vps) == 0 || len(sps) == 0 || len(pps) == 0 {
+		vps, sps, pps = hevcParameterSets(keyframe)
+	}
+	return
+}
+
+// hevcConfig is the H.265 decoder config as UniFi cameras send it: frame type
+// 6, then the bare VPS, SPS and PPS with 2-byte lengths. A standard hvcC
+// record here makes Protect treat the stream as an unknown codec (measured by
+// rjmotion/pyunifiwire on real cameras, see reolink-unifi-protect).
+func hevcConfig(vps, sps, pps []byte) []byte {
+	b := []byte{frameHEVCConf<<4 | codecHEVC, 1}
+	for _, nalu := range [][]byte{vps, sps, pps} {
+		b = binary.BigEndian.AppendUint16(b, uint16(len(nalu)))
+		b = append(b, nalu...)
+	}
+	return b
+}
+
+// hevcParameterSets extracts VPS, SPS and PPS from an H.265 AVCC frame.
+func hevcParameterSets(avcc []byte) (vps, sps, pps []byte) {
+	for len(avcc) > 4 {
+		size := int(binary.BigEndian.Uint32(avcc))
+		if size <= 0 || 4+size > len(avcc) {
+			break
+		}
+		nalu := avcc[4 : 4+size]
+		switch (nalu[0] >> 1) & 0x3F {
+		case h265.NALUTypeVPS:
+			vps = nalu
+		case h265.NALUTypeSPS:
+			sps = nalu
+		case h265.NALUTypePPS:
 			pps = nalu
 		}
 		avcc = avcc[4+size:]

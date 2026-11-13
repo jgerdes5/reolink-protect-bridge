@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -76,13 +77,14 @@ type Bridge struct {
 	sub   *source.Source
 	proto *unifi.Camera
 
-	mu       sync.Mutex
-	info     [2]streamInfo // main, sub
-	runners  map[string]*runner
-	events   []Event // newest last, for the status page
-	eventsUp bool
-	settings *settings
-	tracker  *tracker
+	mu         sync.Mutex
+	info       [2]streamInfo     // main, sub
+	codecNotes map[string]string // channel -> last codec warning
+	runners    map[string]*runner
+	events     []Event // newest last, for the status page
+	eventsUp   bool
+	settings   *settings
+	tracker    *tracker
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -92,6 +94,7 @@ type Bridge struct {
 
 type streamInfo struct {
 	width, height, fps int
+	codec              string // "h264" or "h265"
 	audio              bool
 }
 
@@ -253,7 +256,7 @@ func (b *Bridge) probe(ctx context.Context) {
 				b.mu.Lock()
 				b.info[i] = info
 				b.mu.Unlock()
-				log.Info().Msgf("[bridge] %s stream %dx%d %d fps audio=%t", src.Name, info.width, info.height, info.fps, info.audio)
+				log.Info().Msgf("[bridge] %s stream %s %dx%d %d fps audio=%t", src.Name, info.codec, info.width, info.height, info.fps, info.audio)
 				break
 			}
 			log.Warn().Err(err).Msgf("[bridge] %s stream probe failed, retrying", src.Name)
@@ -268,7 +271,7 @@ func (b *Bridge) probe(ctx context.Context) {
 	b.mu.Unlock()
 }
 
-var errNoVideo = errors.New("stream has no H.264 video (H.265 is not supported)")
+var errNoVideo = errors.New("stream has no H.264 or H.265 video")
 
 // probeSource attaches a consumer for a few seconds: codecs, size from the SPS
 // or first keyframe, and the frame rate from counting frames.
@@ -289,18 +292,26 @@ func probeSource(ctx context.Context, src *source.Source) (streamInfo, error) {
 	if video == nil {
 		return streamInfo{}, errNoVideo
 	}
-	info := streamInfo{audio: audio != nil}
+	info := streamInfo{codec: codecName(video), audio: audio != nil}
 
 	frames := cons.CountFrames(3 * time.Second)
 	info.fps = commonFPS(frames / 3)
 	info.width, info.height = cons.Size()
-	if info.width == 0 {
+	if info.width == 0 && info.codec == "h264" {
 		sps, _ := h264.GetParameterSet(video.FmtpLine)
 		if s := h264.DecodeSPS(sps); s != nil {
 			info.width, info.height = int(s.Width()), int(s.Height())
 		}
 	}
 	return info, nil
+}
+
+// codecName is Protect's name for a video codec.
+func codecName(c *core.Codec) string {
+	if c != nil && c.Name == core.CodecH265 {
+		return "h265"
+	}
+	return "h264"
 }
 
 // commonFPS rounds a measured rate to the values Protect offers.
@@ -326,7 +337,7 @@ func (b *Bridge) channel(name string) unifi.Channel {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	info := b.info[min(channelIndex(name), 1)]
-	return unifi.Channel{Width: info.width, Height: info.height, FPS: info.fps}
+	return unifi.Channel{Width: info.width, Height: info.height, FPS: info.fps, Codec: info.codec}
 }
 
 func channelIndex(name string) int {
@@ -345,7 +356,7 @@ func (b *Bridge) sourceFor(channel string) *source.Source {
 	return b.sub
 }
 
-func (b *Bridge) start(channel, addr, streamName string) {
+func (b *Bridge) start(channel, addr, streamName, codec string) {
 	prev := b.stop(channel)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -360,7 +371,7 @@ func (b *Bridge) start(channel, addr, streamName string) {
 		if prev != nil {
 			<-prev.done // never two streams for one channel
 		}
-		b.serve(ctx, channel, addr, streamName)
+		b.serve(ctx, channel, addr, streamName, codec)
 	}()
 }
 
@@ -379,13 +390,13 @@ func (b *Bridge) stop(channel string) *runner {
 
 // serve keeps one channel streaming to Protect until stopped, re-dialling a
 // lost connection to the same destination.
-func (b *Bridge) serve(ctx context.Context, channel, addr, streamName string) {
+func (b *Bridge) serve(ctx context.Context, channel, addr, streamName, codec string) {
 	for {
-		err := b.streamOnce(ctx, channel, addr, streamName)
+		err := b.streamOnce(ctx, channel, addr, streamName, codec)
 		if ctx.Err() != nil {
 			return
 		}
-		if errors.Is(err, errNoVideo) {
+		if errors.Is(err, errNoVideo) || errors.Is(err, errTranscode) {
 			log.Error().Err(err).Msgf("[bridge] %s", channel)
 		} else {
 			log.Debug().Err(err).Msgf("[bridge] %s ended, retrying", channel)
@@ -398,34 +409,25 @@ func (b *Bridge) serve(ctx context.Context, channel, addr, streamName string) {
 	}
 }
 
-func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName string) error {
+func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, codec string) error {
 	i := channelIndex(channel)
 	src := b.sourceFor(channel)
+	info := b.channel(channel)
 
 	cons := unifi.NewConsumer(unifi.StreamOptions{
 		StreamName: streamName,
 		Channel:    i,
-		FPS:        b.channel(channel).FPS,
+		FPS:        info.FPS,
 		Bitrate:    channelBitrates[i],
 	})
 	cons.RemoteAddr = addr
 	cons.URL = "unifi:" + channel
 
 	// Source first: while the doorbell is offline Protect sees no empty connections.
-	addCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	err := src.AddConsumer(addCtx, cons)
-	cancel()
-	if err != nil {
+	if err := b.attach(ctx, channel, src, cons, info, codec); err != nil {
 		return err
 	}
-	defer func() {
-		src.RemoveConsumer(cons)
-		_ = cons.Stop()
-	}()
-
-	if video, _ := cons.TrackCodecs(); video == nil {
-		return errNoVideo
-	}
+	defer cons.Stop()
 
 	var d net.Dialer
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -451,6 +453,90 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName strin
 
 	_, err = cons.WriteTo(conn)
 	return err
+}
+
+var errTranscode = errors.New("transcoding failed")
+
+// attach connects a channel's consumer to its source: directly if the doorbell
+// sends the codec Protect asks for, else through ffmpeg. The returned
+// consumer's Stop also releases the source.
+func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source, cons *unifi.Consumer, info unifi.Channel, codec string) error {
+	addCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if codec == "" || codec == info.Codec {
+		if err := src.AddConsumer(addCtx, cons); err != nil {
+			return err
+		}
+		if video, _ := cons.TrackCodecs(); video == nil {
+			src.RemoveConsumer(cons)
+			_ = cons.Stop()
+			return errNoVideo
+		}
+		cons.OnStop(func() { src.RemoveConsumer(cons) })
+		return nil
+	}
+
+	if channelIndex(channel) == 0 {
+		// Too large to encode in software: stream it as it is and say why
+		// Protect may not show it.
+		b.noteCodec(channel, true, fmt.Sprintf("Protect expects %s but the doorbell's main stream is %s: "+
+			"set the doorbell to %s or switch Protect's encoding for this camera", upper(codec), upper(info.Codec), upper(codec)))
+		if err := src.AddConsumer(addCtx, cons); err != nil {
+			return err
+		}
+		cons.OnStop(func() { src.RemoveConsumer(cons) })
+		return nil
+	}
+
+	tr := newTranscoder(cons, codec, info.FPS)
+	if err := src.AddConsumer(addCtx, tr); err != nil {
+		return err
+	}
+	release := func() {
+		src.RemoveConsumer(tr)
+		_ = tr.Stop()
+	}
+	if !tr.hasVideo() {
+		release()
+		return errNoVideo
+	}
+	if err := tr.run(ctx, b.opts.FFmpeg); err != nil {
+		release()
+		_ = cons.Stop()
+		return fmt.Errorf("%w (%s %s to %s): %w", errTranscode, channel, upper(info.Codec), upper(codec), err)
+	}
+	b.noteCodec(channel, false, fmt.Sprintf("transcoding %s from %s to %s with ffmpeg", channel, upper(info.Codec), upper(codec)))
+	cons.OnStop(release)
+	return nil
+}
+
+// noteCodec logs a codec note once per channel and message.
+func (b *Bridge) noteCodec(channel string, warn bool, msg string) {
+	b.mu.Lock()
+	if b.codecNotes == nil {
+		b.codecNotes = map[string]string{}
+	}
+	same := b.codecNotes[channel] == msg
+	b.codecNotes[channel] = msg
+	b.mu.Unlock()
+	switch {
+	case same:
+	case warn:
+		log.Warn().Msgf("[bridge] %s", msg)
+	default:
+		log.Info().Msgf("[bridge] %s", msg)
+	}
+}
+
+func upper(codec string) string {
+	switch codec {
+	case "h265":
+		return "H.265"
+	case "h264":
+		return "H.264"
+	}
+	return codec
 }
 
 // Snapshot returns a JPEG from the main stream (a keyframe through ffmpeg),
@@ -543,6 +629,7 @@ type SourceStatus struct {
 	Width     int       `json:"width,omitempty"`
 	Height    int       `json:"height,omitempty"`
 	FPS       int       `json:"fps,omitempty"`
+	Codec     string    `json:"codec,omitempty"` // h264 | h265
 	Audio     bool      `json:"audio"`
 }
 
@@ -556,6 +643,7 @@ func (b *Bridge) Status() Status {
 		}
 		b.mu.Lock()
 		ss.Width, ss.Height, ss.FPS, ss.Audio = b.info[i].width, b.info[i].height, b.info[i].fps, b.info[i].audio
+		ss.Codec = b.info[i].codec
 		b.mu.Unlock()
 		if i == 0 {
 			st.Doorbell.Main = ss

@@ -156,7 +156,7 @@ func TestCameraSession(t *testing.T) {
 			}
 			return Channel{Width: 640, Height: 480, FPS: 15}
 		},
-		Start: func(ch, addr, name string) {
+		Start: func(ch, addr, name, _ string) {
 			calls.mu.Lock()
 			calls.starts = append(calls.starts, ch+" "+addr+" "+name)
 			calls.mu.Unlock()
@@ -331,7 +331,7 @@ func TestChangeVideoSettingsPartial(t *testing.T) {
 	c := &Camera{
 		Name:    "t",
 		Channel: func(string) Channel { return Channel{Width: 640, Height: 480, FPS: 15} },
-		Start:   func(ch, _, _ string) { started = append(started, ch) },
+		Start:   func(ch, _, _, _ string) { started = append(started, ch) },
 		Stop:    func(ch string) { stopped = append(stopped, ch) },
 		Log:     zerolog.Nop(),
 	}
@@ -362,6 +362,50 @@ func TestChangeVideoSettingsPartial(t *testing.T) {
 	res = c.changeVideoSettings(json.RawMessage(`{}`))
 	require.Equal(t, []string{"file:///dev/null"}, dests(res, "video1"))
 	require.Equal(t, []string{"tcp://10.0.0.1:7551"}, dests(res, "video2"))
+}
+
+// Protect names the codec per channel ("type"); a switch restarts the stream,
+// and H.265 is only offered when the main stream is H.265.
+func TestChangeVideoSettingsCodec(t *testing.T) {
+	type start struct{ ch, codec string }
+	var started []start
+	mainCodec := "h264"
+	c := &Camera{
+		Name: "t",
+		Channel: func(name string) Channel {
+			if name == "video1" {
+				return Channel{Width: 2560, Height: 1920, FPS: 15, Codec: mainCodec}
+			}
+			return Channel{Width: 640, Height: 480, FPS: 15}
+		},
+		Start: func(ch, _, _, codec string) { started = append(started, start{ch, codec}) },
+		Stop:  func(string) {},
+		Log:   zerolog.Nop(),
+	}
+	c.init()
+	require.Equal(t, []string{"h264"}, c.featureFlags()["videoCodecs"])
+	mainCodec = "h265"
+	require.Equal(t, []string{"h264", "h265"}, c.featureFlags()["videoCodecs"])
+
+	types := func(res map[string]any) (string, string, string) {
+		v := res["video"].(map[string]any)
+		return v["videoCodec"].(string), v["video1"].(map[string]any)["type"].(string), v["video2"].(map[string]any)["type"].(string)
+	}
+
+	// before Protect names a codec: what the source delivers
+	res := c.changeVideoSettings(json.RawMessage(`{"video":{"video1":{"avSerializer":{
+		"destinations":["tcp://10.0.0.1:7550"],"parameters":{"streamName":"a"}}}}}`))
+	require.Equal(t, []start{{"video1", "h264"}}, started) // Protect's default until it says otherwise
+	vc, t1, t2 := types(res)
+	require.Equal(t, [3]string{"h265", "h265", "h264"}, [3]string{vc, t1, t2})
+
+	// enhanced encoding: every channel in H.265, the running stream restarts
+	res = c.changeVideoSettings(json.RawMessage(`{"video":{
+		"video1":{"type":"h265","avSerializer":{"destinations":["tcp://10.0.0.1:7550"],"parameters":{"streamName":"a"}}},
+		"video2":{"type":"h265","avSerializer":{"destinations":["tcp://10.0.0.1:7551"],"parameters":{"streamName":"b"}}}}}`))
+	require.Equal(t, []start{{"video1", "h264"}, {"video1", "h265"}, {"video2", "h265"}}, started)
+	vc, t1, t2 = types(res)
+	require.Equal(t, [3]string{"h265", "h265", "h265"}, [3]string{vc, t1, t2})
 }
 
 // Ring through Protect's API reuses its login and logs in again when refused.

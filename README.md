@@ -32,6 +32,9 @@ Protect app. No ONVIF, no third-party camera entry.
   - name, date and logo overlay
   - motion detection on/off, sensitivity and zones
   - smart detection types, sensitivity and zones
+- H.264 and H.265. With the doorbell on H.265, turn on enhanced encoding
+  (H.265) for the camera in Protect; the bridge converts the doorbell's
+  low-quality stream, which is always H.264, with ffmpeg
 - Faster switching between high and low quality (optional)
 - Web page for setup, with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
@@ -40,7 +43,6 @@ Protect app. No ONVIF, no third-party camera entry.
 
 ## What doesn't work
 
-- H.265: the doorbell has to be set to H.264
 - More than one doorbell per bridge, and more than one bridge per IP address
   (Protect always sends talkback to UDP port 7004)
 - Custom ringtones from Protect: the doorbell keeps playing its own chime
@@ -79,7 +81,7 @@ it runs fine on small hardware.
 
 ## Requirements
 
-- A Reolink doorbell set to **H.264** (H.265 isn't supported yet)
+- A Reolink video doorbell (H.264 or H.265)
 - UniFi Protect 7.x on a UniFi console (Dream Machine, Cloud Key, UNVR, ...)
 - A host on the same network that runs 24/7 and has a **fixed IP address**.
   Protect sends snapshot requests and talkback audio to that address.
@@ -157,6 +159,10 @@ The **Options** page lets you change the camera name and turn talkback, events, 
   synced (NTP).
 - **No talkback:** check that UDP 7004 from the console to the bridge isn't
   blocked. Remove and re-adopt the camera if Protect doesn't offer the speaker.
+- **No video after setting the doorbell to H.265:** restart the bridge (it
+  reads the codec when it starts), then turn on enhanced encoding (H.265) for
+  the camera in Protect. The log says "Protect expects H.264 but the
+  doorbell's main stream is H.265" until both match.
 - **Ring arrives in the log but not in Protect:** switch the ring method to
   "Protect API" under Options.
 

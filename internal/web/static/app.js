@@ -155,6 +155,7 @@ function streamText(s) {
   if (!s) return ["–", ""];
   if (!s.connected) return ["Disconnected" + (s.error ? ": " + s.error : ""), "bad"];
   let t = "Connected";
+  if (s.codec) t += ` · ${s.codec === "h265" ? "H.265" : "H.264"}`;
   if (s.width) t += ` · ${s.width}×${s.height}`;
   if (s.fps) t += ` · ${s.fps} fps`;
   t += s.audio ? " · audio" : " · no audio";

@@ -399,3 +399,46 @@ func BenchmarkConsumerVideo(b *testing.B) {
 		c.handleVideo(pkt)
 	}
 }
+
+// TestConsumerHEVC checks the UniFi H.265 framing: codec id 8, a frame type 6
+// config with bare 2-byte-length VPS/SPS/PPS, frames as 4-byte NAL units, and
+// the in-band parameter sets left untouched.
+func TestConsumerHEVC(t *testing.T) {
+	sps, _ := base64.StdEncoding.DecodeString("QgEBAWAAAAMAAAMAAAMAAAMAmaAAoAgBaH+KrTuiS7/8AAQABbAgApMuADN/mAE=") // 5120x1440
+	vps := []byte{0x40, 0x01, 0x0c, 0x01}
+	pps := []byte{0x44, 0x01, 0xc1, 0x72}
+	idr := []byte{0x26, 0x01, 0xaf}    // IDR_W_RADL
+	pslice := []byte{0x02, 0x01, 0xd0} // TRAIL_R
+
+	c := NewConsumer(StreamOptions{StreamName: "s", Channel: 0, FPS: 15})
+	recv := core.NewReceiver(c.Medias[0], &core.Codec{Name: core.CodecH265, ClockRate: 90000, PayloadType: core.PayloadTypeRAW})
+	require.NoError(t, c.AddTrack(c.Medias[0], nil, recv))
+	out := &syncBuffer{}
+	go func() { _, _ = c.WriteTo(out) }()
+	require.Eventually(t, func() bool {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.wr != nil
+	}, time.Second, time.Millisecond)
+
+	key := avcc(vps, sps, pps, idr)
+	recv.WriteRTP(&rtp.Packet{Header: rtp.Header{Timestamp: 0}, Payload: avcc(pslice)}) // before the first keyframe: dropped
+	recv.WriteRTP(&rtp.Packet{Header: rtp.Header{Timestamp: 6000}, Payload: key})
+	recv.WriteRTP(&rtp.Packet{Header: rtp.Header{Timestamp: 12000}, Payload: avcc(pslice)})
+	require.Eventually(t, func() bool { return len(out.Bytes()) > 13 }, time.Second, time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+
+	tags := parseUniFi(t, out.Bytes()[13:])
+	require.Len(t, tags, 6) // metadata, HEVC config, onMpma, onClockSync, keyframe, inter frame
+	w, h := c.Size()
+	require.Equal(t, [2]int{5120, 1440}, [2]int{w, h})
+
+	config := []byte{0x68, 1}
+	for _, n := range [][]byte{vps, sps, pps} {
+		config = binary.BigEndian.AppendUint16(config, uint16(len(n)))
+		config = append(config, n...)
+	}
+	require.Equal(t, config, tags[1].payload)
+	require.Equal(t, append([]byte{0x18, 1, 0, 0, 0}, key...), tags[4].payload)
+	require.Equal(t, append([]byte{0x28, 1, 0, 0, 0}, avcc(pslice)...), tags[5].payload)
+}
