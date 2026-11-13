@@ -42,6 +42,9 @@ const (
 )
 
 // opusConfig is the payload of the Opus config tag, as a G4 Instant sends it.
+// libubnt_encoder (ContainerFLV::BuildAudioOpusCodecBytes) writes cf 00 03 and
+// the sample rate's index: 48000 0, 24000 1, 16000 2, 12000 3, 8000 4. The
+// bridge encodes at 16 kHz.
 var opusConfig = []byte{0xcf, 0x00, 0x03, 0x02}
 
 // fileHeader is the FLV header with UniFi's flags, plus PreviousTagSize0.

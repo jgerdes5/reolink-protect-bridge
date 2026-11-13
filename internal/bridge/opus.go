@@ -132,14 +132,18 @@ func (o *opusEncoder) capturedAt(pos uint64) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// opusArgs: ADTS from stdin to Ogg Opus on stdout, 48 kHz mono, 20 ms
-// packets, one Ogg page per packet so nothing waits in the muxer.
+// opusArgs: ADTS from stdin to Ogg Opus on stdout, 16 kHz mono in 20 ms
+// packets like a G4 (libubnt_encoder: OPUS_APPLICATION_AUDIO, complexity 0;
+// the config tag cf 00 03 02 says 16 kHz), one Ogg page per packet. The
+// tiny probe size matters: with ffmpeg's usual probing (even 4 KiB) the
+// demuxer keeps about a second of audio queued for the whole run, which put
+// Opus a second behind the picture.
 func opusArgs(encoder string) []string {
-	args := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer",
-		"-probesize", "4096", "-analyzeduration", "0", "-f", "aac", "-i", "pipe:0",
-		"-map", "0:a:0", "-ac", "1", "-ar", "48000", "-c:a", encoder, "-b:a", "64k"}
+	args := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+		"-probesize", "32", "-analyzeduration", "0", "-f", "aac", "-i", "pipe:0",
+		"-map", "0:a:0", "-ac", "1", "-ar", "16000", "-c:a", encoder, "-b:a", "64k"}
 	if encoder == "libopus" {
-		args = append(args, "-frame_duration", "20", "-application", "lowdelay")
+		args = append(args, "-frame_duration", "20", "-application", "audio", "-compression_level", "0")
 	} else {
 		args = append(args, "-strict", "-2")
 	}

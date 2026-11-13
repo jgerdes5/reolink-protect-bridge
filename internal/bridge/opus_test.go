@@ -15,7 +15,7 @@ import (
 )
 
 func TestOpusSamples(t *testing.T) {
-	require.Equal(t, 960, opusSamples([]byte{0xb8}))         // CELT FB 20 ms, as a G4 sends
+	require.Equal(t, 960, opusSamples([]byte{0xb8}))         // CELT WB 20 ms, as a G4 sends (16 kHz)
 	require.Equal(t, 480, opusSamples([]byte{0x00}))         // SILK NB 10 ms (config 0)
 	require.Equal(t, 960, opusSamples([]byte{0x08}))         // SILK NB 20 ms (config 1)
 	require.Equal(t, 2*960, opusSamples([]byte{0xb9}))       // two frames
@@ -38,7 +38,10 @@ func TestOpusStream(t *testing.T) {
 		cmd := exec.Command(ffmpeg, "-hide_banner", "-loglevel", "error", "-re",
 			"-f", "lavfi", "-i", "testsrc=size=320x240:rate=15", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=16000",
 			"-t", "20", "-c:v", "libx264", "-preset", "ultrafast", "-g", "15", "-bf", "0",
-			"-c:a", "aac", "-b:a", "32k", "-f", "mpegts", "pipe:1")
+			// no audio interleaving delay, so AAC arrives frame by frame as
+			// from the doorbell (the muxer otherwise bunches ~0.7 s)
+			"-c:a", "aac", "-b:a", "32k", "-muxdelay", "0", "-muxpreload", "0", "-pes_payload_size", "0",
+			"-f", "mpegts", "pipe:1")
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			return nil, err
@@ -108,10 +111,28 @@ func TestOpusStream(t *testing.T) {
 	}
 	require.Less(t, near, int64(150), "Opus %d ms off the AAC timeline", near)
 
+	// and it arrives promptly: each Opus tag is written within a few hundred
+	// ms of the newest AAC tag before it (ffmpeg's probing once held a second)
+	var lastAAC uint32
+	lag := int64(0)
+	var lags []int64
+	for _, tg := range parse(out.Bytes()) {
+		switch {
+		case tg.typ == 8 && len(tg.pay) > 1 && tg.pay[1] == 1:
+			lastAAC = tg.ts
+		case tg.typ == 10 && len(tg.pay) > 4 && lastAAC > 0:
+			lags = append(lags, int64(lastAAC)-int64(tg.ts))
+			lag = max(lag, int64(lastAAC)-int64(tg.ts))
+		}
+	}
+	t.Logf("Opus lag behind AAC (ms): %v", lags[len(lags)/2:])
+	require.Less(t, lag, int64(250), "Opus written %d ms behind the AAC", lag)
+
 	require.Equal(t, []byte{0xcf, 0, 3, 2}, opus[0].pay) // config first
 	require.Equal(t, uint32(48000), opus[1].clock)
 	for _, tg := range opus[1:] {
 		require.Equal(t, 960, opusSamples(tg.pay), "20 ms packets")
+		require.Equal(t, byte(0xb8), tg.pay[0]&0xf8, "CELT wideband 20 ms, matching the 16 kHz config")
 	}
 	// 20 ms apart on the timeline (the clock may nudge by a millisecond)
 	last := opus[len(opus)-1].ts
