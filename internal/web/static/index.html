@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Reolink Protect Bridge</title>
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot" id="brand-dot"></span>Reolink Protect Bridge</div>
+  <nav id="tabs" class="tabs" hidden>
+    <button data-tab="status" class="active">Status</button>
+    <button data-tab="connections">Connections</button>
+    <button data-tab="options">Options</button>
+  </nav>
+  <button id="logout" class="link" hidden>Log out</button>
+</header>
+
+<main>
+  <!-- first start -->
+  <section id="view-setup" class="card narrow" hidden>
+    <h1>Welcome</h1>
+    <p class="muted">Create the admin password for this page. You will need it to log in.</p>
+    <form id="setup-form">
+      <label>Password <input type="password" name="password" autocomplete="new-password" minlength="8" maxlength="72" required></label>
+      <label>Repeat password <input type="password" name="password2" autocomplete="new-password" minlength="8" maxlength="72" required></label>
+      <p class="error" data-error></p>
+      <button class="primary" type="submit">Create password</button>
+    </form>
+  </section>
+
+  <section id="view-login" class="card narrow" hidden>
+    <h1>Log in</h1>
+    <form id="login-form">
+      <label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+      <p class="error" data-error></p>
+      <button class="primary" type="submit">Log in</button>
+    </form>
+  </section>
+
+  <!-- status -->
+  <section id="view-status" hidden>
+    <div id="missing" class="banner warn" hidden></div>
+    <div id="start-error" class="banner error-banner" hidden></div>
+    <div class="grid">
+      <div class="card">
+        <h2>Doorbell</h2>
+        <dl class="kv">
+          <dt>Main stream</dt><dd id="st-main">–</dd>
+          <dt>Sub stream</dt><dd id="st-sub">–</dd>
+          <dt>Events</dt><dd id="st-events">–</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h2>UniFi Protect</h2>
+        <dl class="kv">
+          <dt>Connection</dt><dd id="st-protect">–</dd>
+          <dt>Protect version</dt><dd id="st-controller">–</dd>
+          <dt>Last error</dt><dd id="st-perror">–</dd>
+          <dt>Talkback</dt><dd id="st-talk">–</dd>
+          <dt>Streaming</dt><dd id="st-channels">–</dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h2>Camera</h2>
+        <dl class="kv">
+          <dt>Name</dt><dd id="st-name">–</dd>
+          <dt>Model</dt><dd id="st-model">–</dd>
+          <dt>MAC</dt><dd id="st-mac" class="mono">–</dd>
+          <dt>Version</dt><dd id="st-version">–</dd>
+        </dl>
+      </div>
+      <div class="card snapshot">
+        <div class="card-head"><h2>Snapshot</h2><button id="snap-refresh" class="small">Refresh</button></div>
+        <div class="snap-box"><img id="snap" alt="Doorbell snapshot" hidden><span id="snap-msg" class="muted">No snapshot yet.</span></div>
+      </div>
+      <div class="card">
+        <h2>Recent events</h2>
+        <ul id="st-recent" class="events"><li class="muted">None yet.</li></ul>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Log</h2><label class="inline"><input type="checkbox" id="log-follow" checked> Auto-refresh</label></div>
+      <pre id="log" class="log"></pre>
+    </div>
+  </section>
+
+  <!-- connections -->
+  <section id="view-connections" hidden>
+    <form id="conn-form" class="grid two">
+      <div class="card">
+        <div class="card-head"><h2>Reolink doorbell</h2><button type="button" class="small" data-discover="doorbell">Find doorbells</button></div>
+        <div class="found" id="found-doorbell" hidden></div>
+        <label>Address <input name="d.host" placeholder="192.168.1.50" autocomplete="off"></label>
+        <label>Port <input name="d.port" type="number" min="1" max="65535" placeholder="9000"></label>
+        <label>User <input name="d.username" autocomplete="off" placeholder="admin"></label>
+        <label>Password <input name="d.password" type="password" autocomplete="new-password" data-secret></label>
+        <p class="hint" data-hint="d.password"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>UniFi Protect console</h2><button type="button" class="small" data-discover="protect">Find Protect console</button></div>
+        <div class="found" id="found-protect" hidden></div>
+        <label>Address <input name="p.host" placeholder="192.168.1.1" autocomplete="off"></label>
+        <p class="hint">Log in with a local Protect user (adoption tokens are fetched automatically), or paste an adoption token.</p>
+        <label>User <input name="p.username" autocomplete="off"></label>
+        <label>Password <input name="p.password" type="password" autocomplete="new-password" data-secret></label>
+        <p class="hint" data-hint="p.password"></p>
+        <label>Adoption token <input name="p.token" type="password" autocomplete="off" data-secret></label>
+        <p class="hint" data-hint="p.token"></p>
+      </div>
+      <div class="actions">
+        <p class="error" data-error></p>
+        <span class="ok" data-ok></span>
+        <button class="primary" type="submit">Save and restart</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- options -->
+  <section id="view-options" hidden>
+    <form id="opt-form" class="card">
+      <h2>Camera in Protect</h2>
+      <label>Name <input name="cname" maxlength="64" required></label>
+      <label>Model <select name="model"></select></label>
+      <label>Ring method
+        <select name="ring">
+          <option value="camera">Camera (doorbell event over the camera connection)</option>
+          <option value="api">Protect API (needs the Protect user)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" name="events"> Forward doorbell events (ring, motion, person) to Protect</label>
+      <label class="check"><input type="checkbox" name="talkback"> Talkback (speak through the doorbell from Protect)</label>
+      <label class="check"><input type="checkbox" name="settings"> Apply camera settings from Protect to the doorbell</label>
+      <div class="actions">
+        <p class="error" data-error></p>
+        <span class="ok" data-ok></span>
+        <button class="primary" type="submit">Save and restart</button>
+      </div>
+    </form>
+    <div class="card danger">
+      <h2>Camera identity</h2>
+      <p>MAC <span id="opt-mac" class="mono">–</span></p>
+      <p class="muted">Protect knows this camera by its MAC address and certificate. A new identity makes Protect see a <strong>new camera</strong>: the old one stays offline in Protect (delete it there), the new one must be adopted again, and its recordings and settings start over.</p>
+      <p class="error" id="id-error"></p>
+      <button id="new-identity" class="danger-btn">New camera identity…</button>
+    </div>
+  </section>
+</main>
+</body>
+</html>
