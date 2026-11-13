@@ -30,7 +30,7 @@ Protect app. No ONVIF, no third-party camera entry.
   - status light (the doorbell's button light)
   - speaker volume and ring volume (0 mutes the doorbell's own chime)
   - privacy masks (up to 4 rectangles); a mask over the whole picture works
-    as a privacy mode, while the ring button and events keep working
+    as a privacy mode (see [Privacy mode](#privacy-mode) below)
   - name, date and logo overlay
   - motion detection on/off, sensitivity and zones
   - smart detection types, sensitivity and zones
@@ -40,6 +40,10 @@ Protect app. No ONVIF, no third-party camera entry.
 - Quick start of live view and quality switching: when Protect asks for a
   keyframe, the bridge asks the doorbell for one
 - Web page for setup, with automatic discovery of the doorbell and the console
+- The bridge always sets the doorbell's keyframe interval to 1 second (or as
+  close as the doorbell allows) when it starts, so live view starts quickly.
+  This also happens with "Apply camera settings from Protect" turned off, and
+  the setting stays on the doorbell
 - Runs as a Home Assistant add-on, in Docker or as a plain Linux service
 - Works with the UniFi Protect integration in Home Assistant, which sees it as
   a normal Protect doorbell
@@ -74,17 +78,26 @@ Reolink doorbell  ── Baichuan (TCP 9000) ──▶  Reolink Protect Bridge  
 The bridge talks to the doorbell over Reolink's own protocol (Baichuan) for
 video, events and settings. Towards Protect it behaves like a UniFi camera: it
 connects to the console, gets adopted, and streams the doorbell's video in the
-format Protect expects. Video and audio are passed through, not re-encoded, so
-it runs fine on small hardware.
+format Protect expects. Video and audio are normally passed through, not
+re-encoded, so it runs fine on small hardware. The one exception: when Protect
+wants H.265 (enhanced encoding), the low-quality stream, which the doorbell
+only sends as H.264, is converted to H.265 with ffmpeg. That costs some CPU.
+
+The bridge opens the connections to Protect itself. Snapshot requests and
+settings come back over that connection, so the only thing Protect sends to
+the bridge on its own is talkback audio (UDP 7004).
 
 ## Requirements
 
 - A Reolink video doorbell (H.264 or H.265)
 - UniFi Protect 7.x on a UniFi console (Dream Machine, Cloud Key, UNVR, ...)
 - A host on the same network that runs 24/7 and has a **fixed IP address**.
-  Protect sends snapshot requests and talkback audio to that address.
-- A local UniFi OS user without SSO or 2FA, with full Protect access (used to
-  adopt the camera)
+  Protect remembers the camera by that address and sends talkback audio to it.
+- One of these, so the bridge can adopt the camera:
+  - a local UniFi OS user without SSO or 2FA, with full Protect access (the
+    bridge then fetches adoption tokens itself), or
+  - an adoption token from Protect. Without the user, the ring method
+    "Protect API" is not available.
 
 ## Installation
 
@@ -104,13 +117,18 @@ Protect doorbell, so you can use its ring and detection events in automations.
 
 ```sh
 git clone https://github.com/jgerdes5/reolink-protect-bridge
-cd reolink-protect-bridge
-mkdir data && sudo chown 10001 data
-docker compose -f deploy/docker-compose.yml up -d
+cd reolink-protect-bridge/deploy
+mkdir data && sudo chown 10001:10001 data
+docker compose up -d
 ```
 
+The data folder has to be next to `docker-compose.yml` (in `deploy/`), because
+the compose file mounts `./data` relative to its own location. The container
+runs as user 10001, hence the `chown`.
+
 The container needs host networking (talkback arrives on UDP 7004 and
-discovery uses broadcasts). The web page is on port 8080.
+discovery uses broadcasts). The web page is on port 8080; you can change the
+port on the web page under Options, then restart the container.
 
 ### Linux / Proxmox LXC
 
@@ -128,10 +146,15 @@ Prebuilt binaries are also attached to each
 
 ## Setup
 
-1. Open the web page at `http://<host>:8080` and set an admin password. In
-   Home Assistant just open it from the sidebar, no extra password needed.
+1. Open the web page at `http://<host>:8080` and set an admin password.
+   `<host>` is the IP address of the machine the bridge runs on, for example
+   `192.168.1.50`. The install script prints the full address at the end; on
+   the machine itself `hostname -I` shows it (first entry). Use the IP address
+   (or a local name like `bridge.local`) rather than a public domain name, the
+   page refuses to create the admin password otherwise. In Home Assistant
+   just open it from the sidebar, no extra password needed.
 2. Under **Connections**, enter the doorbell (or use *Find doorbells*) and your
-   UniFi console with the local user.
+   UniFi console with the local user or an adoption token.
 3. Save. After a few seconds the doorbell shows up in Protect and adopts itself.
 4. In Protect, turn on motion detection and set up smart detections and zones
    as you like.
@@ -139,14 +162,37 @@ Prebuilt binaries are also attached to each
 If the doorbell is already in Protect via ONVIF, remove that entry first,
 otherwise you'll have it twice.
 
-The **Options** page lets you change the camera name and turn talkback, events and settings sync on or off.
+The **Options** page has:
+
+- the camera name in Protect and the ring method ("Camera" sends the ring over
+  the camera connection, "Protect API" uses the Protect user)
+- switches for events, talkback and applying Protect's camera settings to the
+  doorbell
+- the admin password (not shown in Home Assistant, which handles the login)
+- under Advanced, the web page address (takes effect after a restart of the
+  app) and the path to ffmpeg (the file must be called `ffmpeg`)
+- the camera identity: a new one makes Protect see a brand-new camera that has
+  to be adopted again
+
+If you change the doorbell or console address, enter its password (and
+adoption token, if you use one) again. Stored passwords are only sent to the
+address they were entered for.
+
+## Privacy mode
+
+A privacy mask over the whole picture in Protect works as a privacy mode: the
+doorbell blacks out the video. It only hides the picture. The doorbell's
+microphone keeps running and its audio still reaches Protect (live view and
+recordings). Whether the ring button and detections behave normally while the
+picture is masked hasn't been tested yet.
 
 ## Ports
 
 - Bridge → doorbell: TCP 9000
 - Bridge → UniFi console: TCP 443, 7442, 7444 and 7550
 - UniFi console → bridge: UDP 7004 (talkback)
-- Browser → bridge: TCP 8080 (web page, not used with the Home Assistant add-on)
+- Browser → bridge: TCP 8080 by default (web page, changeable under Options;
+  not used with the Home Assistant add-on)
 
 ## Troubleshooting
 

@@ -135,6 +135,7 @@
       <label class="check"><input type="checkbox" name="events"> Forward doorbell events (ring, motion, person) to Protect</label>
       <label class="check"><input type="checkbox" name="talkback"> Talkback (speak through the doorbell from Protect)</label>
       <label class="check"><input type="checkbox" name="settings"> Apply camera settings from Protect to the doorbell</label>
+      <p class="hint">Independent of this switch, the bridge always sets the doorbell's keyframe interval to 1 second (or as close as the doorbell allows) when it starts, so live view in Protect starts quickly. This change stays on the doorbell.</p>
       <div class="actions">
         <p class="error" data-error></p>
         <span class="ok" data-ok></span>
@@ -157,7 +158,7 @@
       <label>Web page address <input name="listen" placeholder=":8080" required></label>
       <p class="hint">host:port or :port. Takes effect when the app restarts.</p>
       <label>ffmpeg <input name="ffmpeg" placeholder="ffmpeg"></label>
-      <p class="hint">Path to ffmpeg, used for snapshots and talkback.</p>
+      <p class="hint">ffmpeg (found via PATH) or a full path to it, used for snapshots, talkback and converting the low-quality stream to H.265. The file must be called ffmpeg.</p>
       <div class="actions">
         <p class="error" data-error></p>
         <span class="ok" data-ok></span>

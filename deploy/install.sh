@@ -5,6 +5,8 @@
 #   sh install.sh                        # install/upgrade latest release binary
 #   sh install.sh --version v0.1.0       # install a specific release
 #   sh install.sh --from-source <path>   # build from a local checkout
+#                                        # (<path>: the checkout's directory, the one
+#                                        # with go.mod, e.g. /root/reolink-protect-bridge)
 #   sh install.sh --uninstall            # remove service + binary, keep data
 #   sh install.sh --uninstall --purge    # also remove user rpb and all data
 #
@@ -13,7 +15,10 @@
 #                 jgerdes5/reolink-protect-bridge) - needed while the repo
 #                 is private. Example:
 #                   GITHUB_TOKEN=github_pat_xxx sh install.sh
-#   RPB_LISTEN    web UI listen address written into the unit (default :8080)
+#   RPB_LISTEN    web page address for a new installation (default :8080),
+#                 e.g. RPB_LISTEN=:8081 if port 8080 is taken. Only used
+#                 when the configuration is created; later change it on the
+#                 web page under Options > Advanced.
 #
 # Re-running the script is safe; it upgrades the binary and restarts the
 # service, leaving the data directory untouched.
@@ -25,7 +30,8 @@ BIN="/usr/local/bin/$NAME"
 UNIT="/etc/systemd/system/$NAME.service"
 DATA="/var/lib/$NAME"
 USER_NAME="rpb"
-LISTEN="${RPB_LISTEN:-:8080}"
+LISTEN="${RPB_LISTEN:-}"
+DROPIN="/etc/systemd/system/$NAME.service.d/listen.conf"
 
 MODE=install
 SRC=""
@@ -35,8 +41,26 @@ PURGE=0
 log() { printf '==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# The help text is here, not read from "$0": under "curl ... | sh" there is no
+# script file.
 usage() {
-	sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+	cat <<'USAGE'
+Reolink Protect Bridge installer for Debian/Ubuntu (incl. Proxmox LXC).
+
+Usage (as root):
+  sh install.sh                        install/upgrade latest release binary
+  sh install.sh --version v0.1.0       install a specific release
+  sh install.sh --from-source <path>   build from a local checkout
+                                       (<path>: directory with go.mod,
+                                       e.g. /root/reolink-protect-bridge)
+  sh install.sh --uninstall            remove service + binary, keep data
+  sh install.sh --uninstall --purge    also remove user rpb and all data
+
+Environment:
+  GITHUB_TOKEN  GitHub token with read access to the repository, needed
+                while it is private
+  RPB_LISTEN    web page address for a new installation (default :8080)
+USAGE
 	exit "${1:-0}"
 }
 
@@ -55,14 +79,15 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-[ "$(id -u)" -eq 0 ] || die "run as root (e.g. sudo sh $0)"
+[ "$(id -u)" -eq 0 ] || die "run as root (e.g. sudo sh install.sh)"
 command -v systemctl >/dev/null 2>&1 || die "systemd is required"
 
 # ---------------------------------------------------------------- uninstall --
 if [ "$MODE" = uninstall ]; then
 	log "stopping and removing service"
 	systemctl disable --now "$NAME.service" 2>/dev/null || true
-	rm -f "$UNIT"
+	rm -f "$UNIT" "$DROPIN"
+	rmdir "$(dirname "$DROPIN")" 2>/dev/null || true
 	systemctl daemon-reload
 	rm -f "$BIN"
 	if [ "$PURGE" -eq 1 ]; then
@@ -160,17 +185,15 @@ else
 	bin_url="$(asset_url "$asset")"
 	sum_url="$(asset_url SHA256SUMS)"
 	[ -n "$bin_url" ] || die "release $tag has no asset $asset"
+	[ -n "$sum_url" ] || die "release $tag has no SHA256SUMS, refusing to install an unverified binary"
 
 	log "downloading $asset ($tag)"
 	gh_curl "$bin_url" "$TMP/$asset" application/octet-stream
-	if [ -n "$sum_url" ]; then
-		gh_curl "$sum_url" "$TMP/SHA256SUMS" application/octet-stream
-		(cd "$TMP" && grep " \*\{0,1\}$asset\$" SHA256SUMS | sha256sum -c -) >/dev/null ||
-			die "checksum mismatch for $asset"
-		log "checksum ok"
-	else
-		log "warning: no SHA256SUMS in release, skipping verification"
-	fi
+	gh_curl "$sum_url" "$TMP/SHA256SUMS" application/octet-stream
+	grep -q " \*\{0,1\}$asset\$" "$TMP/SHA256SUMS" || die "SHA256SUMS has no entry for $asset"
+	(cd "$TMP" && grep " \*\{0,1\}$asset\$" SHA256SUMS | sha256sum -c -) >/dev/null ||
+		die "checksum mismatch for $asset"
+	log "checksum ok"
 	mv "$TMP/$asset" "$TMP/$NAME"
 fi
 
@@ -184,26 +207,29 @@ log "installed $BIN ($("$BIN" -version 2>/dev/null || echo "version unknown"))"
 # --------------------------------------------------------------------- unit --
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$DATA"
 
-cat >"$TMP/unit" <<UNIT
+# Same text as deploy/systemd/reolink-protect-bridge.service (CI checks that
+# they match); kept here so the script also works on its own.
+cat >"$TMP/unit" <<'UNIT'
 [Unit]
 Description=Reolink Protect Bridge (Reolink doorbell as UniFi Protect camera)
-Documentation=https://github.com/$REPO
+Documentation=https://github.com/jgerdes5/reolink-protect-bridge
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
-User=$USER_NAME
-Group=$USER_NAME
-StateDirectory=$NAME
+User=rpb
+Group=rpb
+StateDirectory=reolink-protect-bridge
 StateDirectoryMode=0750
-WorkingDirectory=$DATA
-Environment=RPB_DATA=$DATA
-ExecStart=$BIN -listen $LISTEN
+WorkingDirectory=/var/lib/reolink-protect-bridge
+Environment=RPB_DATA=/var/lib/reolink-protect-bridge
+# The web page address comes from the configuration (Options > Advanced).
+ExecStart=/usr/local/bin/reolink-protect-bridge
 Restart=always
 RestartSec=5
 
-# Hardening
+# Hardening (ffmpeg runs as a child process under the same rules)
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -215,14 +241,19 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
+RemoveIPC=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 UMask=0027
 
 [Install]
@@ -233,8 +264,17 @@ if ! cmp -s "$TMP/unit" "$UNIT"; then
 	log "writing $UNIT"
 	install -m 0644 "$TMP/unit" "$UNIT"
 fi
+# RPB_LISTEN only seeds a new configuration, see the help text.
+if [ -n "$LISTEN" ]; then
+	if [ -f "$DATA/config.json" ]; then
+		log "RPB_LISTEN ignored: the configuration exists, change the address on the web page"
+	else
+		install -d -m 0755 "$(dirname "$DROPIN")"
+		printf '[Service]\nEnvironment=RPB_LISTEN=%s\n' "$LISTEN" >"$DROPIN"
+	fi
+fi
 systemctl daemon-reload
-systemctl enable "$NAME.service" >/dev/null 2>&1
+systemctl --quiet enable "$NAME.service"
 if [ "$was_active" -eq 1 ]; then
 	log "restarting service"
 	systemctl restart "$NAME.service"
@@ -253,6 +293,8 @@ fi
 ip="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')"
 [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
 [ -n "$ip" ] || ip="<this-host-ip>"
-port="${LISTEN##*:}"
+listen="$(sed -n 's/^ *"listen": *"\([^"]*\)".*/\1/p' "$DATA/config.json" 2>/dev/null | head -n1)"
+[ -n "$listen" ] || listen="${LISTEN:-:8080}"
+port="${listen##*:}"
 log "done. Open the web UI: http://$ip:$port"
 log "logs: journalctl -u $NAME -f    data: $DATA"

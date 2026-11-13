@@ -5,8 +5,11 @@ package logbuf
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -60,6 +63,25 @@ func (b *Buffer) SetSecrets(secrets []string) {
 		add(url.QueryEscape(s))
 		add(url.PathEscape(s))
 		add(url.UserPassword("x", s).String()[2:]) // userinfo escaping
+		// ConsoleWriter quotes values with spaces, quotes, backslashes or
+		// control characters (strconv.Quote); raw JSON (non-JSON passthrough,
+		// nested objects) has the JSON escaping.
+		add(unquote(strconv.Quote(s)))
+		add(unquote(strconv.QuoteToASCII(s)))
+		add(jsonEscape(s, true))
+		add(jsonEscape(s, false))
+	}
+	// Longer patterns first: at one position strings.Replacer takes the first
+	// matching pair, and a secret's prefix must not leave the rest visible.
+	type pair struct{ from, to string }
+	ps := make([]pair, 0, len(pairs)/2)
+	for i := 0; i < len(pairs); i += 2 {
+		ps = append(ps, pair{pairs[i], pairs[i+1]})
+	}
+	sort.SliceStable(ps, func(i, j int) bool { return len(ps[i].from) > len(ps[j].from) })
+	pairs = pairs[:0]
+	for _, p := range ps {
+		pairs = append(pairs, p.from, p.to)
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -68,6 +90,20 @@ func (b *Buffer) SetSecrets(secrets []string) {
 	} else {
 		b.masker = strings.NewReplacer(pairs...)
 	}
+}
+
+// unquote strips the outer quotes of a quoted string.
+func unquote(q string) string { return q[1 : len(q)-1] }
+
+// jsonEscape is s as it appears inside a JSON string.
+func jsonEscape(s string, html bool) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(html)
+	if enc.Encode(s) != nil {
+		return s
+	}
+	return unquote(strings.TrimRight(buf.String(), "\n"))
 }
 
 // Write takes one zerolog event (JSON). Non-JSON input is kept as is.

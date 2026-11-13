@@ -2,6 +2,9 @@ package logbuf
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -46,4 +49,41 @@ func TestSecretsMasked(t *testing.T) {
 		require.NotContains(t, l, "p@ss word")
 		require.NotContains(t, l, "p%40ss%20word")
 	}
+}
+
+// ConsoleWriter quotes values with quotes, backslashes or control characters;
+// the escaped form must be masked too, also in raw (non-JSON) lines.
+func TestSecretsMaskedWhenQuoted(t *testing.T) {
+	secrets := []string{`pa"ss\w0rd`, "tab\there", "html<&>pw", "ümläut pw"}
+	var out bytes.Buffer
+	b := New(&out, 20)
+	b.SetSecrets(secrets)
+	log := zerolog.New(b)
+	for _, s := range secrets {
+		log.Info().Str("password", s).Msg("field")
+		log.Info().Err(errors.New("dial: " + s)).Msg("error")
+		log.Info().Interface("nested", map[string]string{"pw": s}).Msg("nested")
+		log.Info().Msg("message " + s)
+		raw, _ := json.Marshal(map[string]string{"pw": s})
+		_, _ = b.Write(append([]byte("not json "), raw...))
+	}
+	all := append(b.Lines(0), out.String())
+	for _, s := range secrets {
+		q := strconv.Quote(s)
+		j, _ := json.Marshal(s)
+		for _, l := range all {
+			require.NotContains(t, l, s)
+			require.NotContains(t, l, q[1:len(q)-1])
+			require.NotContains(t, l, string(j[1:len(j)-1]))
+		}
+	}
+	require.Contains(t, out.String(), "***")
+}
+
+func TestSecretPrefixNotLeaked(t *testing.T) {
+	b := New(nil, 10)
+	b.SetSecrets([]string{"abc", "abc!def"})
+	l := zerolog.New(b)
+	l.Info().Msg("x abc!def y")
+	require.NotContains(t, b.Lines(0)[0], "def")
 }

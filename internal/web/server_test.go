@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jgerdes5/reolink-protect-bridge/internal/config"
@@ -106,8 +108,8 @@ func TestConfigSecretsWriteOnly(t *testing.T) {
 	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
 
 	res, out := c.do("PUT", "/api/config", map[string]any{
-		"doorbell": map[string]any{"host": "192.168.1.20", "username": "admin", "password": "door-pw"},
-		"protect":  map[string]any{"host": "192.168.1.1", "token": "adopt-token"},
+		"doorbell": map[string]any{"host": "192.0.2.20", "username": "admin", "password": "door-pw"},
+		"protect":  map[string]any{"host": "192.0.2.1", "token": "adopt-token"},
 	}, true)
 	require.Equal(t, 200, res.StatusCode, out)
 	require.True(t, store.Get().Complete())
@@ -120,13 +122,13 @@ func TestConfigSecretsWriteOnly(t *testing.T) {
 
 	// empty password keeps the stored one; clearToken removes the token
 	res, _ = c.do("PUT", "/api/config", map[string]any{
-		"doorbell": map[string]any{"host": "192.168.1.21", "username": "admin", "password": ""},
-		"protect":  map[string]any{"host": "192.168.1.1", "username": "local", "password": "p", "clearToken": true},
+		"doorbell": map[string]any{"host": "192.0.2.20", "username": "admin", "password": "", "port": 9001},
+		"protect":  map[string]any{"host": "192.0.2.1", "username": "local", "password": "p", "clearToken": true},
 	}, true)
 	require.Equal(t, 200, res.StatusCode)
 	cfg := store.Get()
 	require.Equal(t, "door-pw", cfg.Doorbell.Password)
-	require.Equal(t, "192.168.1.21", cfg.Doorbell.Host)
+	require.Equal(t, 9001, cfg.Doorbell.Port)
 	require.Empty(t, cfg.Protect.Token)
 
 	res, _ = c.do("PUT", "/api/config", map[string]any{"camera": map[string]any{"name": "Front", "ring": "nope"}}, true)
@@ -177,7 +179,7 @@ func TestStaticAndHeaders(t *testing.T) {
 func TestIngressMode(t *testing.T) {
 	store, err := config.Open(t.TempDir())
 	require.NoError(t, err)
-	s := New(Options{Store: store, Logs: logbuf.New(nil, 10), Log: zerolog.Nop(), Version: "test", Ingress: true})
+	s := New(Options{Store: store, Logs: logbuf.New(nil, 10), Log: zerolog.Nop(), Version: "test", Ingress: true, IngressPeer: "127.0.0.1"})
 	srv := httptest.NewServer(s)
 	defer srv.Close()
 	c := &client{t: t, srv: srv, c: &http.Client{}}
@@ -248,15 +250,25 @@ func TestAdvancedSettings(t *testing.T) {
 	res, _ := c.do("POST", "/api/setup", map[string]string{"password": "first-pass"}, true)
 	require.Equal(t, 200, res.StatusCode)
 
-	res, body := c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": ":9090", "ffmpeg": "/usr/bin/ffmpeg"}}, true)
-	require.Equal(t, 200, res.StatusCode)
+	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
+	require.NoError(t, os.WriteFile(ffmpeg, []byte("#!/bin/sh\n"), 0o755))
+	res, body := c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": ":9090", "ffmpeg": ffmpeg}}, true)
+	require.Equal(t, 200, res.StatusCode, body)
 	require.Equal(t, ":9090", body["advanced"].(map[string]any)["listen"])
-	require.Equal(t, "/usr/bin/ffmpeg", store.Get().FFmpeg)
+	require.Equal(t, ffmpeg, store.Get().FFmpeg)
+
+	// the ffmpeg path must not become a way to run any program
+	for _, bad := range []string{"/bin/sh", "sh", filepath.Join(t.TempDir(), "ffmpeg")} {
+		res, body = c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": ":9090", "ffmpeg": bad}}, true)
+		require.Equal(t, 400, res.StatusCode, bad)
+		require.NotEmpty(t, body["error"])
+	}
+	require.Equal(t, ffmpeg, store.Get().FFmpeg)
 
 	res, _ = c.do("PUT", "/api/config", map[string]any{"advanced": map[string]string{"listen": "nonsense"}}, true)
 	require.Equal(t, 400, res.StatusCode)
 
-	res, _ = c.do("PUT", "/api/config", map[string]any{"doorbell": map[string]any{"host": "10.0.0.5", "username": "admin", "channel": 2}}, true)
+	res, _ = c.do("PUT", "/api/config", map[string]any{"doorbell": map[string]any{"host": "192.0.2.5", "username": "admin", "channel": 2}}, true)
 	require.Equal(t, 200, res.StatusCode)
 	require.Equal(t, 2, store.Get().Doorbell.Channel)
 }
@@ -265,4 +277,139 @@ func mustURL(t *testing.T, s string) *url.URL {
 	u, err := url.Parse(s)
 	require.NoError(t, err)
 	return u
+}
+
+// Behind Ingress there is no own login, so only Home Assistant's Supervisor
+// may reach the page; anything else on the hassio network or the host is
+// refused.
+func TestIngressOnlyFromSupervisor(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	require.NoError(t, err)
+	srv := httptest.NewServer(New(Options{Store: store, Log: zerolog.Nop(), Ingress: true})) // default peer 172.30.32.2
+	defer srv.Close()
+	c := &client{t: t, srv: srv, c: &http.Client{}}
+	for _, path := range []string{"/", "/api/session", "/api/config", "/healthz"} {
+		res, _ := c.do("GET", path, nil, false)
+		require.Equal(t, http.StatusForbidden, res.StatusCode, path)
+	}
+	res, _ := c.do("PUT", "/api/config", map[string]any{"camera": map[string]any{"name": "x", "ring": "camera"}}, true)
+	require.Equal(t, http.StatusForbidden, res.StatusCode)
+	require.Equal(t, "Doorbell", store.Get().Camera.Name)
+
+	// the handler sees the Supervisor's address: allowed
+	h := New(Options{Store: store, Log: zerolog.Nop(), Ingress: true})
+	req := httptest.NewRequest("GET", "/api/config", nil)
+	req.RemoteAddr = DefaultIngressPeer + ":41234"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	req.RemoteAddr = "172.30.32.5:41234"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// DNS rebinding: the first-start setup only works when the page was opened
+// by IP address or a local name.
+func TestSetupHostCheck(t *testing.T) {
+	c, store := newTest(t)
+	post := func(host string) int {
+		req, _ := http.NewRequest("POST", c.srv.URL+"/api/setup", bytes.NewReader([]byte(`{"password":"secret123"}`)))
+		req.Header.Set("X-Requested-With", "test")
+		req.Host = host
+		res, err := c.c.Do(req)
+		require.NoError(t, err)
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+	for _, host := range []string{"attacker.example.com", "attacker.example.com:8080", "rebind.evil.net."} {
+		require.Equal(t, http.StatusForbidden, post(host), host)
+	}
+	require.False(t, store.Get().HasAdmin())
+
+	s := &Server{opts: Options{Store: store}}
+	for _, host := range []string{"192.0.2.10:8080", "[2001:db8::1]:8080", "localhost:8080", "bridge:8080", "bridge.local", "bridge.lan:8080", "bridge.home.arpa", "bridge.internal"} {
+		require.True(t, s.setupHostAllowed(host), host)
+	}
+	_, err := store.Update(func(c *config.Config) error { c.Web.Listen = "bridge.example.org:8080"; return nil })
+	require.NoError(t, err)
+	require.True(t, s.setupHostAllowed("bridge.example.org:8080"))
+	require.False(t, s.setupHostAllowed("other.example.org:8080"))
+
+	require.Equal(t, http.StatusOK, post("192.0.2.10:8080"))
+	require.True(t, store.Get().HasAdmin())
+}
+
+// A stored password or token is only sent to the address it was entered for:
+// changing the address requires entering it again.
+func TestHostChangeNeedsSecret(t *testing.T) {
+	c, store := newTest(t)
+	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
+	res, out := c.do("PUT", "/api/config", map[string]any{
+		"doorbell": map[string]any{"host": "192.0.2.20", "username": "admin", "password": "door-pw"},
+		"protect":  map[string]any{"host": "192.0.2.1", "username": "local", "password": "prot-pw", "token": "adopt-token"},
+	}, true)
+	require.Equal(t, 200, res.StatusCode, out)
+
+	res, out = c.do("PUT", "/api/config", map[string]any{
+		"doorbell": map[string]any{"host": "198.51.100.66", "username": "admin"},
+	}, true)
+	require.Equal(t, 400, res.StatusCode)
+	require.Contains(t, out["error"], "doorbell password")
+	require.Equal(t, "192.0.2.20", store.Get().Doorbell.Host)
+
+	res, out = c.do("PUT", "/api/config", map[string]any{
+		"protect": map[string]any{"host": "198.51.100.66", "username": "local", "token": "new-token"},
+	}, true)
+	require.Equal(t, 400, res.StatusCode)
+	require.Contains(t, out["error"], "Protect password")
+
+	res, out = c.do("PUT", "/api/config", map[string]any{
+		"protect": map[string]any{"host": "198.51.100.66", "username": "local", "password": "new-pw"},
+	}, true)
+	require.Equal(t, 400, res.StatusCode)
+	require.Contains(t, out["error"], "adoption token")
+	require.Equal(t, "192.0.2.1", store.Get().Protect.Host)
+
+	// entering the secrets again (or removing the token) works
+	res, out = c.do("PUT", "/api/config", map[string]any{
+		"doorbell": map[string]any{"host": "192.0.2.30", "username": "admin", "password": "door-pw2"},
+		"protect":  map[string]any{"host": "192.0.2.2", "username": "local", "password": "new-pw", "clearToken": true},
+	}, true)
+	require.Equal(t, 200, res.StatusCode, out)
+	cfg := store.Get()
+	require.Equal(t, "door-pw2", cfg.Doorbell.Password)
+	require.Equal(t, "new-pw", cfg.Protect.Password)
+	require.Empty(t, cfg.Protect.Token)
+}
+
+// Parallel wrong passwords must not get more than 5 tries past the limiter.
+func TestLoginRateLimitParallel(t *testing.T) {
+	c, _ := newTest(t)
+	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
+	c.do("POST", "/api/logout", nil, true)
+	var wg sync.WaitGroup
+	var tried, blocked atomic.Int32
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequest("POST", c.srv.URL+"/api/login", bytes.NewReader([]byte(`{"password":"wrong pass"}`)))
+			req.Header.Set("X-Requested-With", "test")
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return
+			}
+			_ = res.Body.Close()
+			switch res.StatusCode {
+			case http.StatusUnauthorized:
+				tried.Add(1)
+			case http.StatusTooManyRequests:
+				blocked.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.LessOrEqual(t, tried.Load(), int32(5))
+	require.Equal(t, int32(30), tried.Load()+blocked.Load())
 }

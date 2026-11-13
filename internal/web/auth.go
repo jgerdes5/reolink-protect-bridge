@@ -137,6 +137,7 @@ func sessionToken(r *http.Request) string {
 
 // limiter slows down password guessing per client address: after 5 failures
 // each further attempt is blocked for a doubling time, up to 15 minutes.
+// Usage: reserve before checking the password, success if it was right.
 type limiter struct {
 	mu    sync.Mutex
 	fails map[string]*failState
@@ -158,19 +159,12 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// blocked returns how long the client must still wait.
-func (l *limiter) blocked(ip string) time.Duration {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if f := l.fails[ip]; f != nil {
-		if d := time.Until(f.until); d > 0 {
-			return d
-		}
-	}
-	return 0
-}
-
-func (l *limiter) fail(ip string) {
+// reserve atomically checks whether the client may try a password now and,
+// if so, counts the attempt as a failure in advance; success removes it
+// again. Checking and counting in one step means parallel requests cannot all
+// pass the check before the first failure is recorded. It returns how long the
+// client must still wait (0: go ahead).
+func (l *limiter) reserve(ip string) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
@@ -184,12 +178,16 @@ func (l *limiter) fail(ip string) {
 		f = &failState{}
 		l.fails[ip] = f
 	}
+	if d := f.until.Sub(now); d > 0 {
+		return d
+	}
 	f.count++
 	f.last = now
 	if f.count >= 5 {
 		d := time.Second << min(f.count-5, 10)
 		f.until = now.Add(min(d, 15*time.Minute))
 	}
+	return 0
 }
 
 func (l *limiter) success(ip string) {

@@ -10,7 +10,8 @@ arch:
 # Prebuilt by the release workflow (deploy/homeassistant.Dockerfile); the tag is
 # this file's version.
 image: ghcr.io/jgerdes5/{arch}-reolink-protect-bridge-addon
-init: false
+# Docker's init process runs as PID 1 and reaps exited ffmpeg processes.
+init: true
 startup: services
 boot: auto
 # Protect reaches the camera at this host's address: talkback arrives on

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -88,4 +89,56 @@ func TestAdminPassword(t *testing.T) {
 	require.NoError(t, cfg.SetAdminPassword("long enough"))
 	require.True(t, cfg.CheckAdminPassword("long enough"))
 	require.False(t, cfg.CheckAdminPassword("wrong pass"))
+}
+
+func TestOpenRejectsInvalidFile(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	require.NoError(t, err)
+	require.True(t, s.Created())
+
+	s2, err := Open(dir)
+	require.NoError(t, err)
+	require.False(t, s2.Created())
+
+	// a hand-edited invalid value is reported, not silently replaced
+	path := filepath.Join(dir, FileName)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	bad := strings.Replace(string(data), `"ring": "camera"`, `"ring": "bell"`, 1)
+	require.NotEqual(t, string(data), bad)
+	require.NoError(t, os.WriteFile(path, []byte(bad), 0o600))
+	_, err = Open(dir)
+	require.ErrorContains(t, err, "ring method")
+	require.ErrorContains(t, err, path)
+
+	// empty values with a safe default are filled in
+	empty := strings.Replace(string(data), `"ring": "camera"`, `"ring": ""`, 1)
+	require.NoError(t, os.WriteFile(path, []byte(empty), 0o600))
+	s3, err := Open(dir)
+	require.NoError(t, err)
+	require.Equal(t, "camera", s3.Get().Camera.Ring)
+}
+
+func TestFFmpegPath(t *testing.T) {
+	cfg := Default()
+	cfg.FFmpeg = "/bin/sh"
+	require.Error(t, cfg.Validate())
+	cfg.FFmpeg = "/usr/bin/ffmpeg"
+	require.NoError(t, cfg.Validate())
+
+	require.NoError(t, CheckFFmpeg("ffmpeg"))
+	require.Error(t, CheckFFmpeg("sh"))
+	require.Error(t, CheckFFmpeg("/bin/sh"))
+	require.Error(t, CheckFFmpeg(filepath.Join(t.TempDir(), "ffmpeg"))) // missing
+
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "ffmpeg")
+	require.NoError(t, os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o600))
+	require.Error(t, CheckFFmpeg(exe)) // not executable
+	require.NoError(t, os.Chmod(exe, 0o755))
+	require.NoError(t, CheckFFmpeg(exe))
+	sub := filepath.Join(t.TempDir(), "ffmpeg")
+	require.NoError(t, os.Mkdir(sub, 0o755))
+	require.ErrorContains(t, CheckFFmpeg(sub), "not an executable file")
 }

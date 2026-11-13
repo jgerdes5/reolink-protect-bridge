@@ -25,6 +25,17 @@ shows it as a doorbell too, with ring and detection events for automations.
 - The host must reach the doorbell on TCP 9000 and the console on TCP 7442,
   443, 7444 and 7550.
 
+## Notes
+
+- A privacy mask over the whole picture in Protect blacks out the video only;
+  the doorbell's microphone audio still reaches Protect. Ring button and
+  detections under a full mask haven't been tested yet.
+- On every start the bridge sets the doorbell's keyframe interval to 1 second
+  (or as close as the doorbell allows), also with "Apply camera settings from
+  Protect" turned off.
+- If you change the doorbell or console address, enter its password (and
+  adoption token) again.
+
 ## Data
 
 Configuration, credentials and the camera's identity are stored in the

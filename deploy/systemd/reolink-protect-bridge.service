@@ -12,11 +12,12 @@ StateDirectory=reolink-protect-bridge
 StateDirectoryMode=0750
 WorkingDirectory=/var/lib/reolink-protect-bridge
 Environment=RPB_DATA=/var/lib/reolink-protect-bridge
-ExecStart=/usr/local/bin/reolink-protect-bridge -listen :8080
+# The web page address comes from the configuration (Options > Advanced).
+ExecStart=/usr/local/bin/reolink-protect-bridge
 Restart=always
 RestartSec=5
 
-# Hardening
+# Hardening (ffmpeg runs as a child process under the same rules)
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -28,14 +29,19 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
 RestrictSUIDSGID=yes
 RestrictRealtime=yes
 RestrictNamespaces=yes
+RemoveIPC=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 UMask=0027
 
 [Install]

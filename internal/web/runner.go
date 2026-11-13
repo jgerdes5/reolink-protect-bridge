@@ -11,7 +11,8 @@ import (
 
 // Runner owns the one running bridge and replaces it on configuration changes.
 type Runner struct {
-	log zerolog.Logger
+	store *config.Store
+	log   zerolog.Logger
 
 	restart sync.Mutex // one restart at a time
 
@@ -22,17 +23,24 @@ type Runner struct {
 	startErr string
 }
 
-// NewRunner logs bridge messages to log.
-func NewRunner(log zerolog.Logger) *Runner { return &Runner{log: log} }
+// NewRunner runs the bridge with the configuration in store and logs bridge
+// messages to log.
+func NewRunner(store *config.Store, log zerolog.Logger) *Runner {
+	return &Runner{store: store, log: log}
+}
 
 // Restart stops the running bridge, waits until it has stopped (Protect must
-// never see two cameras with one identity) and starts a new one if cfg is
-// complete.
-func (r *Runner) Restart(cfg config.Config) {
+// never see two cameras with one identity) and starts a new one if the
+// configuration is complete. The configuration is read from the store under
+// the restart lock, so of two saves in quick succession the last restart
+// always uses the newest settings.
+func (r *Runner) Restart() {
 	r.restart.Lock()
 	defer r.restart.Unlock()
 
 	r.stop()
+
+	cfg := r.store.Get()
 
 	if !cfg.Complete() {
 		r.log.Info().Strs("missing", cfg.Missing()).Msg("[web] configuration incomplete, bridge not started")

@@ -40,7 +40,16 @@ type Options struct {
 	// Home Assistant's Ingress proxy, which already authenticated the user;
 	// no own login, and the page is shown in Home Assistant's frame.
 	Ingress bool
+	// IngressPeer is the only client address accepted in Ingress mode
+	// (default DefaultIngressPeer, the Supervisor's address).
+	IngressPeer string
 }
+
+// DefaultIngressPeer is the address Home Assistant's Supervisor connects
+// from for Ingress. Anything else that reaches the listening address (other
+// add-ons on the hassio network, the host itself) would otherwise get the
+// page without a login.
+const DefaultIngressPeer = "172.30.32.2"
 
 // Server is the HTTP handler.
 type Server struct {
@@ -53,10 +62,10 @@ type Server struct {
 
 // New builds the handler.
 func New(opts Options) *Server {
-	sessionFile := ""
-	if opts.Store != nil {
-		sessionFile = filepath.Join(filepath.Dir(opts.Store.Path()), "sessions.json")
+	if opts.Ingress && opts.IngressPeer == "" {
+		opts.IngressPeer = DefaultIngressPeer
 	}
+	sessionFile := filepath.Join(filepath.Dir(opts.Store.Path()), "sessions.json")
 	s := &Server{opts: opts, sessions: newSessions(sessionFile), limiter: newLimiter(), mux: http.NewServeMux()}
 
 	static, _ := fs.Sub(staticFS, "static")
@@ -94,6 +103,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Set("X-Frame-Options", "DENY")
 	}
 	h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; frame-ancestors "+frames+"; base-uri 'none'; form-action 'self'")
+	if s.opts.Ingress && clientIP(r) != s.opts.IngressPeer {
+		// Without its own login the page may only be served to the proxy
+		// that authenticated the user.
+		writeError(w, http.StatusForbidden, "only reachable through Home Assistant")
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		h.Set("Cache-Control", "no-store")
 		// CSRF: a cross-site form cannot set custom headers, and a
@@ -161,6 +176,12 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "logins are handled by Home Assistant")
 		return
 	}
+	if !s.setupHostAllowed(r.Host) {
+		// DNS rebinding: a web site whose name suddenly resolves to this
+		// host could otherwise create the admin password before the owner.
+		writeError(w, http.StatusForbidden, "to create the admin password, open this page by the IP address of the machine it runs on (http://IP:port) or by a local name such as bridge.local, not by a public domain name")
+		return
+	}
 	var in passwordInput
 	if !readJSON(w, r, &in) {
 		return
@@ -185,13 +206,34 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 
 var errAdminExists = errors.New("the admin password is already set")
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
-	if d := s.limiter.blocked(ip); d > 0 {
-		w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
-		writeError(w, http.StatusTooManyRequests, "too many failed logins, try again in "+d.Round(time.Second).String())
-		return
+// setupHostAllowed accepts the Host header of a page opened by IP address,
+// as localhost, by a single-label name or a name in a local-only domain, or
+// by the host of the configured listen address. Public names are refused:
+// a DNS rebinding attack needs one.
+func (s *Server) setupHostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
 	}
+	host = strings.ToLower(strings.TrimSuffix(strings.Trim(host, "[]"), "."))
+	if host == "" {
+		return false
+	}
+	if net.ParseIP(host) != nil || host == "localhost" || !strings.Contains(host, ".") {
+		return true
+	}
+	for _, suffix := range []string{".local", ".lan", ".home.arpa", ".internal", ".localhost"} {
+		if strings.HasSuffix(host, suffix) {
+			return true
+		}
+	}
+	if lh, _, err := net.SplitHostPort(s.opts.Store.Get().Web.Listen); err == nil && lh != "" {
+		return strings.EqualFold(strings.TrimSuffix(lh, "."), host)
+	}
+	return false
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var in passwordInput
 	if !readJSON(w, r, &in) {
 		return
@@ -201,8 +243,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "create the admin password first")
 		return
 	}
+	ip := clientIP(r)
+	if d := s.limiter.reserve(ip); d > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(d.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, "too many failed logins, try again in "+d.Round(time.Second).String())
+		return
+	}
 	if !cfg.CheckAdminPassword(in.Password) {
-		s.limiter.fail(ip)
 		s.opts.Log.Warn().Str("client", ip).Msg("[web] failed login")
 		writeError(w, http.StatusUnauthorized, "wrong password")
 		return
@@ -304,10 +351,28 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, &in) {
 		return
 	}
+	if a := in.Advanced; a != nil {
+		// checked before taking the store lock: it touches the file system
+		ffmpeg := strings.TrimSpace(a.FFmpeg)
+		if ffmpeg == "" {
+			ffmpeg = "ffmpeg"
+		}
+		if err := config.CheckFFmpeg(ffmpeg); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 	before := s.opts.Store.Get()
 	cfg, err := s.opts.Store.Update(func(c *config.Config) error {
+		// Stored secrets are only ever sent to the address they were entered
+		// for: if the address changes they must be entered again, otherwise
+		// whoever can change the address could collect them.
 		if d := in.Doorbell; d != nil {
-			c.Doorbell.Host = strings.TrimSpace(d.Host)
+			host := strings.TrimSpace(d.Host)
+			if host != "" && host != c.Doorbell.Host && c.Doorbell.Password != "" && d.Password == "" {
+				return errReenter("doorbell address", "the doorbell password")
+			}
+			c.Doorbell.Host = host
 			c.Doorbell.Port = d.Port
 			c.Doorbell.Username = strings.TrimSpace(d.Username)
 			c.Doorbell.Channel = d.Channel
@@ -316,7 +381,16 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if p := in.Protect; p != nil {
-			c.Protect.Host = strings.TrimSpace(p.Host)
+			host := strings.TrimSpace(p.Host)
+			if host != "" && host != c.Protect.Host {
+				if c.Protect.Password != "" && p.Password == "" && !p.ClearPassword && strings.TrimSpace(p.Username) != "" {
+					return errReenter("Protect console address", "the Protect password")
+				}
+				if c.Protect.Token != "" && strings.TrimSpace(p.Token) == "" && !p.ClearToken {
+					return errReenter("Protect console address", "the adoption token (or remove it)")
+				}
+			}
+			c.Protect.Host = host
 			c.Protect.Username = strings.TrimSpace(p.Username)
 			switch {
 			case p.Password != "":
@@ -338,8 +412,11 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if a := in.Advanced; a != nil {
 			listen := strings.TrimSpace(a.Listen)
-			if _, port, err := net.SplitHostPort(listen); err != nil || port == "" {
-				return fmt.Errorf("web page address %q: use host:port or :port", listen)
+			if s.opts.Ingress {
+				listen = c.Web.Listen // not used behind Ingress, and not editable there
+			}
+			if err := config.ValidListen(listen); err != nil {
+				return err
 			}
 			ffmpeg := strings.TrimSpace(a.FFmpeg)
 			if ffmpeg == "" {
@@ -355,6 +432,12 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	s.applied(before, cfg)
 	writeJSON(w, http.StatusOK, s.view(cfg))
+}
+
+// errReenter is the error for a changed address whose stored secret was not
+// entered again.
+func errReenter(field, secret string) error {
+	return fmt.Errorf("the %s changed: enter %s again (stored passwords are only sent to the address they were entered for)", field, secret)
 }
 
 func (s *Server) handleNewIdentity(w http.ResponseWriter, _ *http.Request) {
@@ -390,7 +473,7 @@ func (s *Server) applied(before, after config.Config) {
 	if b != nil && reflect.DeepEqual(before.Options(), after.Options()) {
 		return
 	}
-	s.opts.Runner.Restart(after)
+	s.opts.Runner.Restart() // with the latest configuration, also if another save came in between
 }
 
 // --- status ---
@@ -501,25 +584,25 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "logins are handled by Home Assistant")
 		return
 	}
-	ip := clientIP(r)
-	if wait := s.limiter.blocked(ip); wait > 0 {
-		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many attempts, try again in %s", wait.Round(time.Second)))
-		return
-	}
 	var in passwordChange
 	if !readJSON(w, r, &in) {
 		return
 	}
+	ip := clientIP(r)
+	if wait := s.limiter.reserve(ip); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("too many attempts, try again in %s", wait.Round(time.Second)))
+		return
+	}
 	if !s.opts.Store.Get().CheckAdminPassword(in.Current) {
-		s.limiter.fail(ip)
 		writeError(w, http.StatusForbidden, "the current password is wrong")
 		return
 	}
+	s.limiter.success(ip)
 	if _, err := s.opts.Store.Update(func(c *config.Config) error { return c.SetAdminPassword(in.Password) }); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	s.limiter.success(ip)
 	s.sessions.clear()
 	s.opts.Log.Info().Msg("[web] admin password changed")
 	s.startSession(w, r)

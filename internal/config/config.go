@@ -176,6 +176,50 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	if err := ValidListen(c.Web.Listen); err != nil {
+		return err
+	}
+	if err := validFFmpegName(c.FFmpeg); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidListen checks a web page address: host:port or :port.
+func ValidListen(listen string) error {
+	if _, port, err := net.SplitHostPort(listen); err != nil || port == "" {
+		return fmt.Errorf("web page address %q: use host:port or :port", listen)
+	}
+	return nil
+}
+
+// validFFmpegName only allows a program called ffmpeg: the path is settable
+// from the web page and must not become a way to run any other program.
+func validFFmpegName(path string) error {
+	switch filepath.Base(path) {
+	case "ffmpeg", "ffmpeg.exe":
+		return nil
+	}
+	return fmt.Errorf("ffmpeg %q: the program must be called ffmpeg", path)
+}
+
+// CheckFFmpeg validates path like Validate and, if it contains a directory,
+// checks that the file exists and is executable. A bare "ffmpeg" is looked
+// up in PATH when it is started.
+func CheckFFmpeg(path string) error {
+	if err := validFFmpegName(path); err != nil {
+		return err
+	}
+	if !strings.ContainsAny(path, `/\`) {
+		return nil
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("ffmpeg %q: %w", path, err)
+	}
+	if !fi.Mode().IsRegular() || fi.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("ffmpeg %q: not an executable file", path)
+	}
 	return nil
 }
 
@@ -274,13 +318,19 @@ func (c Config) CheckAdminPassword(password string) bool {
 
 // Store holds the configuration in memory and on disk.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	cfg  Config
+	mu      sync.Mutex
+	path    string
+	cfg     Config
+	created bool
 }
 
 // Open loads dir/config.json, creating the directory, the file and the camera
 // identity on first start.
+//
+// A hand-edited file with an invalid value is not repaired silently (that
+// could quietly change where credentials are sent): Open fails with an error
+// naming the file and the value. Empty values that have a safe default (camera
+// name, ring method, web page address, ffmpeg) are filled in.
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
@@ -294,7 +344,11 @@ func Open(dir string) (*Store, error) {
 			return nil, fmt.Errorf("%s: %w", s.path, err)
 		}
 		s.cfg.fillDefaults()
+		if verr := s.cfg.Validate(); verr != nil {
+			return nil, fmt.Errorf("%s: %w (correct or remove this value in the file, then start again)", s.path, verr)
+		}
 	case errors.Is(err, os.ErrNotExist):
+		s.created = true
 	default:
 		return nil, err
 	}
@@ -315,6 +369,9 @@ func Open(dir string) (*Store, error) {
 	}
 	return s, nil
 }
+
+// Created reports whether Open created a new settings file (first start).
+func (s *Store) Created() bool { return s.created }
 
 // Path is the settings file.
 func (s *Store) Path() string { return s.path }
@@ -372,5 +429,21 @@ func save(path string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir makes a rename in dir durable.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
+		return err
+	}
+	return nil
 }

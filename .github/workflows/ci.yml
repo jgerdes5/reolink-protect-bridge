@@ -12,9 +12,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
@@ -23,6 +23,11 @@ jobs:
 
       - name: go vet
         run: go vet ./...
+
+      - name: install.sh and the systemd unit have the same unit text
+        run: |
+          sed -n "/^cat >\"\$TMP\/unit\" <<'UNIT'\$/,/^UNIT\$/p" deploy/install.sh | sed '1d;$d' |
+            diff -u deploy/systemd/reolink-protect-bridge.service -
 
       - name: go test
         run: go test -race -count=1 ./...

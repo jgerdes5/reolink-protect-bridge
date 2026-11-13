@@ -36,6 +36,7 @@ Notes:
 - `nesting=1` lets the systemd sandboxing in the service unit work inside an unprivileged container.
 - Keep the IP static: UniFi Protect remembers the camera by this address and sends talkback audio to it (UDP 7004).
 - If you enable the Proxmox firewall for the container, allow inbound TCP 8080 (web UI) and UDP 7004 from the console, plus UDP broadcast on the LAN.
+- If port 8080 is taken, run the installer as `RPB_LISTEN=:8081 sh install.sh` on the first install, or change the port later on the web page under Options.
 
 ## 3. Open a shell in the container
 
@@ -71,8 +72,12 @@ Running it again upgrades to the latest release.
 
 ## 5. Open the web UI
 
-Browse to `http://<ip>:8080` (the script prints the exact URL) and follow the setup:
-enter the doorbell's address and credentials, then adopt the camera in UniFi Protect.
+Browse to `http://<ip>:8080` (`<ip>` is the container's address from step 1,
+e.g. `http://192.168.1.50:8080`; the script prints the exact URL) and follow
+the setup: create the admin password, then enter the doorbell's address and
+credentials and the UniFi console with a local user or an adoption token.
+After saving, the camera shows up in UniFi Protect and adopts itself; there is
+nothing to click in Protect.
 
 Useful commands inside the container:
 

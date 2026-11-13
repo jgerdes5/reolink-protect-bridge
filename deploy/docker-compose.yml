@@ -1,8 +1,14 @@
 # Reolink Protect Bridge
 #
+# Run these in the directory of this file (deploy/): "./data" below is
+# relative to it.
+#
 #   mkdir -p data && sudo chown 10001:10001 data   # container runs as uid 10001
 #   docker compose up -d
 #   open http://<host-ip>:8080
+#
+# <host-ip> is the LAN IP address of the machine running Docker, e.g.
+# 192.168.1.20; "hostname -I" on that machine prints it (first entry).
 services:
   reolink-protect-bridge:
     image: ghcr.io/jgerdes5/reolink-protect-bridge:latest
@@ -15,8 +21,11 @@ services:
     #    bridge advertises would be the container IP, which Protect can't reach.
     #  - Device discovery (Reolink and UniFi adoption) uses UDP broadcast, which
     #    does not cross the Docker bridge network.
-    # With host networking the web UI listens directly on host port 8080
-    # (change with `command: ["-listen", ":8081"]`), "ports:" is not used.
+    # With host networking the web UI listens directly on host port 8080,
+    # "ports:" is not used. To use another port, change it on the web page
+    # (Options > Advanced) and restart the container; for a first start with
+    # 8080 taken, set RPB_LISTEN: ":8081" below (only used when data/ is
+    # still empty).
     network_mode: host
     volumes:
       - ./data:/data

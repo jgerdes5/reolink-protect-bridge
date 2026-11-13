@@ -20,7 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # ---- runtime ----------------------------------------------------------------
 FROM debian:trixie-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ffmpeg ca-certificates wget \
+ && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && useradd --system --uid 10001 --home-dir /data --shell /usr/sbin/nologin rpb \
  && mkdir -p /data && chown rpb:rpb /data
@@ -29,13 +29,16 @@ COPY --from=build /out/reolink-protect-bridge /usr/local/bin/reolink-protect-bri
 
 ENV RPB_DATA=/data
 VOLUME /data
-# Web UI. The container is meant to run with network_mode: host (talkback
-# arrives on UDP 7004 from the UniFi console, discovery uses broadcast), so
-# EXPOSE is documentation only.
+# Web UI (default port; changed on the web page under Options > Advanced).
+# The container is meant to run with network_mode: host (talkback arrives on
+# UDP 7004 from the UniFi console, discovery uses broadcast), so EXPOSE is
+# documentation only.
 EXPOSE 8080
 USER rpb
 
+# -healthcheck reads the web page address from /data/config.json, so it
+# follows a port changed on the web page.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
+  CMD ["/usr/local/bin/reolink-protect-bridge", "-healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/reolink-protect-bridge"]

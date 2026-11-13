@@ -18,6 +18,8 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 
 FROM debian:trixie-slim
 ARG VERSION=dev
+# add-on version as in reolink_protect_bridge/config.yaml (tag without "v")
+ARG BUILD_VERSION=dev
 ARG BUILD_ARCH
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
@@ -26,7 +28,7 @@ COPY --from=build /out/reolink-protect-bridge /usr/local/bin/reolink-protect-bri
 
 LABEL io.hass.type="addon" \
       io.hass.name="Reolink Protect Bridge" \
-      io.hass.version="${VERSION}" \
+      io.hass.version="${BUILD_VERSION}" \
       io.hass.arch="${BUILD_ARCH}"
 
 # Home Assistant mounts the add-on's persistent folder at /data.

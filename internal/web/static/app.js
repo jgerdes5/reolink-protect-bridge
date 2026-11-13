@@ -263,6 +263,7 @@ async function loadConfig() {
   setSecret(c, "d.password", config.doorbell.password.set);
   setSecret(c, "p.password", config.protect.password.set);
   setSecret(c, "p.token", config.protect.token.set);
+  hostChanged();
 
   const o = $("#opt-form");
   o.cname.value = config.camera.name;
@@ -295,11 +296,37 @@ function setSecret(form, name, isSet) {
       type: "button", class: "link", onclick: ev => {
         input.dataset.clear = "1";
         input.placeholder = "";
+        input.required = false;
         ev.target.parentElement.textContent = "Will be removed when you save.";
       },
     }, "Remove"));
   }
 }
+
+// Stored secrets are only sent to the address they were entered for: when an
+// address is changed, the matching password (and token) must be entered again.
+function hostChanged() {
+  const f = $("#conn-form");
+  if (!config) return;
+  const mark = (name, changed, text) => {
+    const input = f[name];
+    const hint = $(`[data-hint="${name}"]`, f);
+    const old = $(".reenter", hint);
+    if (old) old.remove();
+    input.required = false;
+    if (!changed || input.dataset.clear === "1") return;
+    if (name !== "p.token") input.required = true;
+    hint.append(el("strong", { class: "reenter" }, text));
+  };
+  const dHost = f["d.host"].value.trim();
+  const pHost = f["p.host"].value.trim();
+  const dChanged = dHost !== "" && dHost !== config.doorbell.host;
+  const pChanged = pHost !== "" && pHost !== config.protect.host;
+  mark("d.password", dChanged && config.doorbell.password.set, " Address changed: enter the password again.");
+  mark("p.password", pChanged && config.protect.password.set && f["p.username"].value.trim() !== "", " Address changed: enter the password again.");
+  mark("p.token", pChanged && config.protect.token.set, " Address changed: enter the token again or remove it.");
+}
+for (const name of ["d.host", "p.host", "p.username"]) $("#conn-form")[name].addEventListener("input", hostChanged);
 
 $("#conn-form").addEventListener("submit", async ev => {
   ev.preventDefault();
