@@ -16,11 +16,17 @@ import (
 // Protect's camera settings, applied to the Reolink doorbell over Baichuan
 // (msg IDs and XML from the D340W firmware, see pkg/baichuan/settings.go).
 // Protect sends all of them on every connect and each change on its own; they
-// are collected for settleDelay and applied together over one short
-// connection, each group as GET -> modify -> SET, and only if a value differs.
+// are debounced (settleQuiet after the last change, at most settleMax after
+// the first, so a dragged slider still applies while it moves) and applied
+// together, each group as GET -> modify -> SET and only if a value differs.
+// The control connection stays open between flushes for settingsIdle, so a
+// change costs no new login.
 
 const (
-	settleDelay   = time.Second
+	settleQuiet   = 250 * time.Millisecond
+	settleMax     = time.Second
+	settleDelay   = settleMax // longest wait for a pending change (tests)
+	settingsIdle  = 30 * time.Second
 	settingsRetry = time.Minute // backoff cap while the doorbell is unreachable
 )
 
@@ -42,6 +48,7 @@ type settings struct {
 	osd      *unifi.OSD
 	video    map[string]unifi.Video // channel -> frame rate / bitrate
 	timer    *time.Timer
+	first    time.Time     // first change since the last flush (settleMax)
 	retry    time.Duration // current backoff after a failed dial, 0 = none
 	closed   bool
 	enabled  map[string]bool // Protect object types with smart detection on; nil = all
@@ -52,6 +59,8 @@ type settings struct {
 	ctx     context.Context // cancelled by close; nil = never
 	cancel  context.CancelFunc
 	dial    func(ctx context.Context) (*baichuan.Client, error) // for tests; nil = Bridge.dialControl
+	client  *baichuan.Client                                    // kept between flushes; guarded by flushMu
+	idle    *time.Timer                                         // closes client after settingsIdle
 }
 
 func newSettings(b *Bridge, apply bool) *settings {
@@ -172,7 +181,11 @@ func (s *settings) schedule() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.retry = 0 // new values: try them soon
-	s.arm(settleDelay)
+	now := time.Now()
+	if s.first.IsZero() {
+		s.first = now
+	}
+	s.arm(max(min(settleQuiet, settleMax-now.Sub(s.first)), 0))
 }
 
 // arm (re)starts the flush timer. Must be called with s.mu held.
@@ -203,8 +216,50 @@ func (s *settings) close() {
 	}
 	s.mu.Unlock()
 	s.flushMu.Lock()
-	//lint:ignore SA2001 taking the lock waits for a running flush to end
+	s.dropClient()
 	s.flushMu.Unlock()
+}
+
+// conn returns the kept control connection or dials one; reused tells
+// which. Must be called with flushMu held.
+func (s *settings) conn(ctx context.Context) (c *baichuan.Client, reused bool, err error) {
+	if s.client != nil {
+		return s.client, true, nil
+	}
+	dial := s.dial
+	if dial == nil {
+		dial = s.b.dialControl
+	}
+	if c, err = dial(ctx); err != nil {
+		return nil, false, err
+	}
+	s.client = c
+	return c, false, nil
+}
+
+// dropClient closes the kept connection. Must be called with flushMu held.
+func (s *settings) dropClient() {
+	if s.idle != nil {
+		s.idle.Stop()
+	}
+	if s.client != nil {
+		_ = s.client.Close()
+		s.client = nil
+	}
+}
+
+// keepClient closes the connection after settingsIdle without a flush. Must
+// be called with flushMu held.
+func (s *settings) keepClient() {
+	if s.idle == nil {
+		s.idle = time.AfterFunc(settingsIdle, func() {
+			s.flushMu.Lock()
+			defer s.flushMu.Unlock()
+			s.dropClient()
+		})
+		return
+	}
+	s.idle.Reset(settingsIdle)
 }
 
 // pendingSet is what one flush applies.
@@ -268,6 +323,7 @@ func (s *settings) flush() {
 		return
 	}
 	p := s.take()
+	s.first = time.Time{}
 	hdr := ""
 	if p.hdr {
 		hdr = hdrSwitch(*s.hdrOn, s.hdrMode)
@@ -276,7 +332,6 @@ func (s *settings) flush() {
 	if p.empty() {
 		return
 	}
-	isp, sound, smart, motion, osd, video := p.isp, p.sound, p.smart, p.motion, p.osd, p.video
 
 	base := s.ctx
 	if base == nil {
@@ -285,12 +340,7 @@ func (s *settings) flush() {
 	ctx, cancel := context.WithTimeout(base, 60*time.Second)
 	defer cancel()
 
-	dial := s.dial
-	if dial == nil {
-		dial = s.b.dialControl
-	}
-	client, err := dial(ctx)
-	if err != nil {
+	unreachable := func(err error) {
 		s.mu.Lock()
 		s.putBack(p)
 		s.retry = min(max(2*s.retry, 5*time.Second), settingsRetry)
@@ -300,57 +350,90 @@ func (s *settings) flush() {
 		if base.Err() == nil {
 			log.Warn().Err(err).Msgf("[settings] can't reach the doorbell, retrying in %s", retry)
 		}
+	}
+	client, reused, err := s.conn(ctx)
+	if err != nil {
+		unreachable(err)
 		return
 	}
-	defer client.Close()
 	s.mu.Lock()
 	s.retry = 0
 	s.mu.Unlock()
+
+	ok := s.applyAll(ctx, client, p, hdr, reused)
+	if !ok && reused && ctx.Err() == nil {
+		// the kept connection may have gone stale (the doorbell drops idle
+		// ones): all of it again on a fresh one; GET-modify-SET repeats safely
+		s.dropClient()
+		if client, _, err = s.conn(ctx); err != nil {
+			unreachable(err)
+			return
+		}
+		ok = s.applyAll(ctx, client, p, hdr, false)
+	}
+	if ok {
+		s.keepClient()
+	} else {
+		s.dropClient()
+	}
+}
+
+// applyAll writes one flush's values; it returns false if any group failed.
+// quiet suppresses the warnings (a retry follows).
+func (s *settings) applyAll(ctx context.Context, client *baichuan.Client, p pendingSet, hdr string, quiet bool) bool {
+	isp, sound, smart, motion, osd, video := p.isp, p.sound, p.smart, p.motion, p.osd, p.video
 	ch := uint8(s.b.opts.Doorbell.Channel)
+	ok := true
+	run := func(ctx context.Context, what string, f func() error) {
+		if ctx.Err() != nil {
+			ok = false
+			return
+		}
+		if err := f(); err != nil {
+			ok = false
+			if quiet {
+				log.Debug().Err(err).Msgf("[settings] %s (retrying on a new connection)", what)
+			} else {
+				log.Warn().Err(err).Msgf("[settings] %s", what)
+			}
+		}
+	}
 
 	if isp != nil || hdr != "" {
-		s.run(ctx, "image", func() error { return applyImage(ctx, client, ch, isp, hdr) })
+		run(ctx, "image", func() error { return applyImage(ctx, client, ch, isp, hdr) })
 	}
 	if isp != nil || sound != nil {
-		s.run(ctx, "leds", func() error { return applyLeds(ctx, client, ch, isp, sound) })
+		run(ctx, "leds", func() error { return applyLeds(ctx, client, ch, isp, sound) })
 	}
 	if isp != nil && isp.NightVision() != "" {
-		s.run(ctx, "day/night threshold", func() error {
+		run(ctx, "day/night threshold", func() error {
 			return update(ctx, client, baichuan.MsgDayNightGet, baichuan.MsgDayNightSet, ch, nil, dayNightChange(isp), "night vision threshold")
 		})
 	}
 	if sound != nil {
-		s.run(ctx, "audio", func() error { return applyAudio(ctx, client, ch, sound) })
+		run(ctx, "audio", func() error { return applyAudio(ctx, client, ch, sound) })
 	}
 	if smart != nil {
-		s.run(ctx, "ai", func() error { return applyAI(ctx, client, ch, smart) })
+		run(ctx, "ai", func() error { return applyAI(ctx, client, ch, smart) })
 	}
 	if motion != nil {
-		s.run(ctx, "motion", func() error { return applyMotion(ctx, client, ch, motion) })
+		run(ctx, "motion", func() error { return applyMotion(ctx, client, ch, motion) })
 	}
 	if isp != nil && isp.Masks != nil {
 		masks := isp.Masks
-		s.run(ctx, "privacy masks", func() error {
+		run(ctx, "privacy masks", func() error {
 			return update(ctx, client, msgMaskGet, msgMaskSet, ch, nil, maskChange(masks), "privacy masks")
 		})
 	}
 	if video != nil {
-		s.run(ctx, "frame rate and bitrate", func() error { return s.b.applyVideo(ctx, client, ch, video) })
+		run(ctx, "frame rate and bitrate", func() error { return s.b.applyVideo(ctx, client, ch, video) })
 	}
 	if osd != nil {
-		s.run(ctx, "overlay", func() error {
+		run(ctx, "overlay", func() error {
 			return update(ctx, client, msgOsdGet, msgOsdSet, ch, nil, osdChange(*osd), "overlay")
 		})
 	}
-}
-
-func (s *settings) run(ctx context.Context, what string, f func() error) {
-	if ctx.Err() != nil {
-		return
-	}
-	if err := f(); err != nil {
-		log.Warn().Err(err).Msgf("[settings] %s", what)
-	}
+	return ok
 }
 
 // update runs GET -> change -> SET for one config group; change returns

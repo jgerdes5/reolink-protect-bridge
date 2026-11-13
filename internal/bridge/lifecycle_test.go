@@ -269,3 +269,35 @@ func TestSettingsClose(t *testing.T) {
 	time.Sleep(settleDelay + 200*time.Millisecond)
 	require.Equal(t, int32(0), f.calls.Load())
 }
+
+// Debounce: a single change goes out after settleQuiet; a slider dragged
+// without pause still goes out within settleMax of its first change.
+func TestSettingsDebounce(t *testing.T) {
+	f := &failDial{release: make(chan struct{})}
+	close(f.release)
+	s := newSettings(nil, true)
+	s.dial = f.dial
+	defer s.close()
+
+	start := time.Now()
+	s.ISP(unifi.ISP{Brightness: iptr(10)})
+	require.Eventually(t, func() bool { return f.calls.Load() == 1 }, time.Second, 5*time.Millisecond)
+	require.Less(t, time.Since(start), settleQuiet+150*time.Millisecond)
+
+	s2 := newSettings(nil, true)
+	f2 := &failDial{release: make(chan struct{})}
+	close(f2.release)
+	s2.dial = f2.dial
+	defer s2.close()
+	start = time.Now()
+	var first time.Duration
+	for i := 0; time.Since(start) < 2*settleMax; i++ {
+		s2.ISP(unifi.ISP{Brightness: iptr(i % 100)})
+		if first == 0 && f2.calls.Load() > 0 {
+			first = time.Since(start)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.NotZero(t, first, "never flushed while changes kept coming")
+	require.Less(t, first, settleMax+200*time.Millisecond)
+}
