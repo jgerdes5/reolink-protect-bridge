@@ -1,5 +1,8 @@
 "use strict";
 
+// Set when running as a Home Assistant add-on behind Ingress.
+let ingress = false;
+
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
@@ -17,7 +20,7 @@ async function api(method, path, body) {
   const res = await fetch(path, opts);
   let data = null;
   if ((res.headers.get("Content-Type") || "").includes("application/json")) data = await res.json();
-  if (res.status === 401 && path !== "/api/login") {
+  if (res.status === 401 && path !== "api/login") {
     showView("login");
     throw new Error("not logged in");
   }
@@ -71,7 +74,7 @@ async function busy(button, fn) {
 function showView(name) {
   const loggedIn = !["setup", "login"].includes(name);
   $("#tabs").hidden = !loggedIn;
-  $("#logout").hidden = !loggedIn;
+  $("#logout").hidden = !loggedIn || ingress; // Home Assistant handles logins
   for (const v of ["setup", "login", "status", "connections", "options"]) {
     $("#view-" + v).hidden = v !== name;
   }
@@ -95,14 +98,15 @@ $$("#tabs button").forEach(b => b.addEventListener("click", () => {
 }));
 
 $("#logout").addEventListener("click", async () => {
-  try { await api("POST", "/api/logout"); } catch (_) { /* ignore */ }
+  try { await api("POST", "api/logout"); } catch (_) { /* ignore */ }
   showView("login");
 });
 
 async function init() {
   let s;
   try {
-    s = await api("GET", "/api/session");
+    s = await api("GET", "api/session");
+    ingress = !!s.ingress;
   } catch (e) {
     document.body.textContent = "Cannot reach the bridge: " + e.message;
     return;
@@ -124,7 +128,7 @@ $("#setup-form").addEventListener("submit", async ev => {
   formError(f, "");
   await busy($("button", f), async () => {
     try {
-      await api("POST", "/api/setup", { password: pw });
+      await api("POST", "api/setup", { password: pw });
       f.reset();
       showView("connections");
     } catch (e) { formError(f, e.message); }
@@ -137,7 +141,7 @@ $("#login-form").addEventListener("submit", async ev => {
   formError(f, "");
   await busy($("button", f), async () => {
     try {
-      await api("POST", "/api/login", { password: f.password.value });
+      await api("POST", "api/login", { password: f.password.value });
       f.reset();
       const tab = location.hash.slice(1);
       showView(["status", "connections", "options"].includes(tab) ? tab : "status");
@@ -160,7 +164,7 @@ function streamText(s) {
 
 async function refreshStatus() {
   let st;
-  try { st = await api("GET", "/api/status"); } catch (_) { return; }
+  try { st = await api("GET", "api/status"); } catch (_) { return; }
 
   const missing = $("#missing");
   missing.hidden = st.configured;
@@ -207,7 +211,7 @@ async function refreshStatus() {
 
 async function refreshLogs() {
   try {
-    const d = await api("GET", "/api/logs?n=200");
+    const d = await api("GET", "api/logs?n=200");
     const pre = $("#log");
     const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     pre.textContent = d.lines.join("\n");
@@ -221,7 +225,7 @@ async function refreshSnapshot() {
   await busy(btn, async () => {
     msg.textContent = "Loading…";
     try {
-      const res = await fetch("/api/snapshot.jpg?t=" + Date.now(), { credentials: "same-origin" });
+      const res = await fetch("api/snapshot.jpg?t=" + Date.now(), { credentials: "same-origin" });
       if (!res.ok) {
         let err = res.statusText;
         try { err = (await res.json()).error; } catch (_) { /* not JSON */ }
@@ -247,7 +251,7 @@ $("#snap-refresh").addEventListener("click", refreshSnapshot);
 let config = null;
 
 async function loadConfig() {
-  try { config = await api("GET", "/api/config"); } catch (_) { return; }
+  try { config = await api("GET", "api/config"); } catch (_) { return; }
   const c = $("#conn-form");
   c["d.host"].value = config.doorbell.host;
   c["d.port"].value = config.doorbell.port || "";
@@ -314,7 +318,7 @@ $("#conn-form").addEventListener("submit", async ev => {
   };
   await busy($("button[type=submit]", f), async () => {
     try {
-      await api("PUT", "/api/config", body);
+      await api("PUT", "api/config", body);
       await loadConfig();
       flashOK(f, "Saved. The bridge restarts.");
     } catch (e) { formError(f, e.message); }
@@ -338,7 +342,7 @@ $("#opt-form").addEventListener("submit", async ev => {
   };
   await busy($("button[type=submit]", f), async () => {
     try {
-      await api("PUT", "/api/config", body);
+      await api("PUT", "api/config", body);
       await loadConfig();
       flashOK(f, "Saved. The bridge restarts.");
     } catch (e) { formError(f, e.message); }
@@ -355,7 +359,7 @@ $("#new-identity").addEventListener("click", async ev => {
   $("#id-error").textContent = "";
   await busy(ev.target, async () => {
     try {
-      await api("POST", "/api/identity");
+      await api("POST", "api/identity");
       await loadConfig();
     } catch (e) { $("#id-error").textContent = e.message; }
   });
@@ -372,7 +376,7 @@ async function discover(btn) {
   box.replaceChildren(el("span", { class: "muted" }, kind === "doorbell" ? "Scanning the local network…" : "Searching…"));
   await busy(btn, async () => {
     try {
-      const d = await api("GET", "/api/discover?kind=" + kind);
+      const d = await api("GET", "api/discover?kind=" + kind);
       const list = d.devices || [];
       box.replaceChildren();
       if (!list.length) {

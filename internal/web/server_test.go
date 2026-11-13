@@ -168,3 +168,32 @@ func TestStaticAndHeaders(t *testing.T) {
 	res, _ = c.raw("GET", "/app.js")
 	require.Equal(t, 200, res.StatusCode)
 }
+
+// As a Home Assistant add-on behind Ingress: no own login, setup refused, the
+// page may be framed by Home Assistant (same origin), API paths are relative.
+func TestIngressMode(t *testing.T) {
+	store, err := config.Open(t.TempDir())
+	require.NoError(t, err)
+	s := New(Options{Store: store, Logs: logbuf.New(nil, 10), Log: zerolog.Nop(), Version: "test", Ingress: true})
+	srv := httptest.NewServer(s)
+	defer srv.Close()
+	c := &client{t: t, srv: srv, c: &http.Client{}}
+
+	resp, body := c.do("GET", "/api/session", nil, false)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, true, body["authenticated"])
+	require.Equal(t, false, body["setup"])
+	require.Equal(t, true, body["ingress"])
+	require.Contains(t, resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'self'")
+	require.Empty(t, resp.Header.Get("X-Frame-Options"))
+
+	resp, _ = c.do("GET", "/api/config", nil, false) // no session needed
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp, _ = c.do("POST", "/api/setup", map[string]string{"password": "longenough"}, true)
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+
+	resp, js := c.raw("GET", "/app.js")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.NotContains(t, js, `"/api/`) // relative: works under /api/hassio_ingress/<token>/
+}

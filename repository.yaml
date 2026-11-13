@@ -1,0 +1,5 @@
+# Home Assistant add-on repository (Settings > Add-ons > Add-on Store >
+# Repositories > this repository's URL). The add-on is in reolink_protect_bridge/.
+name: Reolink Protect Bridge
+url: https://github.com/jgerdes5/reolink-protect-bridge
+maintainer: Jannik Gerdes

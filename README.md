@@ -59,6 +59,17 @@ web page address. A step-by-step guide for a new Proxmox container, with every
 value explained, is in [deploy/proxmox.md](deploy/proxmox.md). To build from a
 checkout instead: `sudo sh deploy/install.sh --from-source .`.
 
+### Home Assistant add-on
+
+On Home Assistant OS or Supervised: Settings → Add-ons → Add-on Store → ⋮ →
+Repositories → add `https://github.com/jgerdes5/reolink-protect-bridge`, then
+install **Reolink Protect Bridge** and open it from the sidebar. The camera gets
+the Home Assistant host's IP address in Protect (keep it fixed), and the web
+page is served only through Home Assistant, which handles the login. The
+UniFi Protect integration in Home Assistant then shows the doorbell with its
+ring and detection events. Details: [add-on documentation](reolink_protect_bridge/DOCS.md).
+(Home Assistant can only add the repository once it is public.)
+
 ### Docker
 
 ```sh

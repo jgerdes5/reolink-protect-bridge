@@ -26,6 +26,8 @@ func main() {
 	dataDir := flag.String("data", envOr("RPB_DATA", "./data"), "data directory (config.json); env RPB_DATA")
 	listen := flag.String("listen", "", "web UI listen address, overrides the config (e.g. :8080)")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	ingress := flag.Bool("ingress", os.Getenv("RPB_INGRESS") == "1",
+		"Home Assistant add-on: serve the web page only to Home Assistant's Ingress proxy, without a separate login; env RPB_INGRESS=1")
 	flag.Parse()
 
 	if *showVersion {
@@ -49,11 +51,16 @@ func main() {
 	logs.SetSecrets(cfg.Secrets())
 
 	addr := cfg.Web.Listen
+	if *ingress {
+		// Ingress reaches a host-network add-on on the hassio network gateway;
+		// listening only there keeps the page off the LAN.
+		addr = ingressListen
+	}
 	if *listen != "" {
 		addr = *listen
 	}
 	log.Info().Str("version", version).Str("config", store.Path()).Str("listen", addr).Msg("[main] reolink-protect-bridge")
-	if !cfg.HasAdmin() {
+	if !cfg.HasAdmin() && !*ingress {
 		log.Warn().Msgf("[main] first start: open the web page on %s and create the admin password", addr)
 	}
 
@@ -69,6 +76,7 @@ func main() {
 			Logs:    logs,
 			Log:     log,
 			Version: version,
+			Ingress: *ingress,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
@@ -103,6 +111,11 @@ func main() {
 		log.Warn().Msg("[main] bridge did not stop in time")
 	}
 }
+
+// ingressListen is where Home Assistant's Supervisor connects for Ingress to an
+// add-on with host networking (the hassio network gateway), with the
+// ingress_port from the add-on's config.yaml.
+const ingressListen = "172.30.32.1:8099"
 
 func envOr(key, def string) string {
 	if v := os.Getenv(key); v != "" {

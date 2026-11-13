@@ -33,6 +33,10 @@ type Options struct {
 	Logs    *logbuf.Buffer
 	Log     zerolog.Logger
 	Version string
+	// Ingress: running as a Home Assistant add-on, reachable only through
+	// Home Assistant's Ingress proxy, which already authenticated the user;
+	// no own login, and the page is shown in Home Assistant's frame.
+	Ingress bool
 }
 
 // Server is the HTTP handler.
@@ -74,9 +78,14 @@ func New(opts Options) *Server {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
-	h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	frames := "'none'"
+	if s.opts.Ingress {
+		frames = "'self'" // Home Assistant shows Ingress pages in a same-origin frame
+	} else {
+		h.Set("X-Frame-Options", "DENY")
+	}
+	h.Set("Content-Security-Policy", "default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; frame-ancestors "+frames+"; base-uri 'none'; form-action 'self'")
 	if strings.HasPrefix(r.URL.Path, "/api/") {
 		h.Set("Cache-Control", "no-store")
 		// CSRF: a cross-site form cannot set custom headers, and a
@@ -91,7 +100,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.sessions.valid(sessionToken(r)) {
+		if !s.opts.Ingress && !s.sessions.valid(sessionToken(r)) {
 			writeError(w, http.StatusUnauthorized, "not logged in")
 			return
 		}
@@ -122,6 +131,12 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	cfg := s.opts.Store.Get()
+	if s.opts.Ingress {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"setup": false, "authenticated": true, "ingress": true, "version": s.opts.Version,
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"setup":         !cfg.HasAdmin(),
 		"authenticated": cfg.HasAdmin() && s.sessions.valid(sessionToken(r)),
@@ -134,6 +149,10 @@ type passwordInput struct {
 }
 
 func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
+	if s.opts.Ingress {
+		writeError(w, http.StatusConflict, "logins are handled by Home Assistant")
+		return
+	}
 	var in passwordInput
 	if !readJSON(w, r, &in) {
 		return

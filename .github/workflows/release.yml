@@ -95,3 +95,63 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Home Assistant add-on images: one per add-on arch, named
+  # ghcr.io/<owner>/{arch}-reolink-protect-bridge-addon:<version> as
+  # reolink_protect_bridge/config.yaml expects. The add-on version must equal
+  # the tag without the "v".
+  addon:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { arch: amd64, platform: linux/amd64 }
+          - { arch: aarch64, platform: linux/arm64 }
+          - { arch: armv7, platform: linux/arm/v7 }
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the add-on version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          want="${TAG#v}"
+          have="$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' reolink_protect_bridge/config.yaml)"
+          if [ "$want" != "$have" ]; then
+            echo "reolink_protect_bridge/config.yaml has version $have, tag is $TAG" >&2
+            exit 1
+          fi
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image name
+        id: name
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          echo "image=ghcr.io/$(echo '${{ github.repository_owner }}' | tr 'A-Z' 'a-z')/${{ matrix.arch }}-reolink-protect-bridge-addon" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/homeassistant.Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            BUILD_ARCH=${{ matrix.arch }}
+          tags: |
+            ${{ steps.name.outputs.image }}:${{ steps.name.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=addon-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=addon-${{ matrix.arch }}

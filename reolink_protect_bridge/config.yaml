@@ -1,0 +1,27 @@
+name: Reolink Protect Bridge
+version: "0.1.0"
+slug: reolink_protect_bridge
+description: Shows a Reolink video doorbell in UniFi Protect as a native UniFi doorbell
+url: https://github.com/jgerdes5/reolink-protect-bridge
+arch:
+  - amd64
+  - aarch64
+  - armv7
+# Prebuilt by the release workflow (deploy/homeassistant.Dockerfile); the tag is
+# this file's version.
+image: ghcr.io/jgerdes5/{arch}-reolink-protect-bridge-addon
+init: false
+startup: services
+boot: auto
+# Protect reaches the camera at this host's address: talkback arrives on
+# UDP 7004 and doorbell/console discovery uses broadcasts.
+host_network: true
+# The web page is only served through Home Assistant (the app listens on the
+# hassio network gateway, 172.30.32.1:8099), which also handles the login.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:doorbell-video
+panel_title: Reolink Protect
+# config.json with the camera identity and credentials lives in /data and is
+# part of Home Assistant backups.
+backup: hot
