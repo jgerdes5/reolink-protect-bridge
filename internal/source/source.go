@@ -1,7 +1,7 @@
 // Package source keeps one Reolink stream (main or sub) connected and hands its
 // tracks to consumers: the UniFi FLV consumers, snapshots and talkback. It is a
 // small, single-producer version of go2rtc's internal/streams: on a reconnect
-// the new producer's tracks replace the old ones under the running consumers,
+// the running consumers are fed from the new producer's tracks,
 // and backchannel tracks are attached again.
 package source
 
@@ -32,11 +32,36 @@ type Source struct {
 
 	mu        sync.Mutex
 	prod      Producer
-	receivers []*core.Receiver // recvonly tracks handed to consumers
-	backs     []back           // consumer tracks attached to the producer's backchannel
-	connected chan struct{}    // closed while a producer is up
-	err       error            // last dial or stream error
-	since     time.Time        // connected since
+	tracks    []*fanout     // one per producer track, kept across reconnects
+	backs     []back        // consumer tracks attached to the producer's backchannel
+	connected chan struct{} // closed while a producer is up
+	err       error         // last dial or stream error
+	since     time.Time     // connected since
+}
+
+// fanout feeds one producer track to the consumers. Each consumer gets a
+// receiver of its own, attached before it is added here, so consumers can
+// join a running stream without racing with its packets (go2rtc reads a
+// receiver's children without a lock). The producer's tracks are created
+// before it starts: a Reolink producer started without tracks never streams.
+type fanout struct {
+	media *core.Media
+	codec *core.Codec // the current producer's
+	mu    sync.Mutex
+	outs  []fanOut
+}
+
+type fanOut struct {
+	cons core.Consumer
+	r    *core.Receiver
+}
+
+func (f *fanout) write(pkt *core.Packet) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range f.outs {
+		o.r.WriteRTP(pkt)
+	}
 }
 
 type back struct {
@@ -91,11 +116,30 @@ func (s *Source) attach(prod Producer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i, old := range s.receivers {
-		if track := trackFor(prod, old.Codec); track != nil {
-			old.Replace(track)
-			s.receivers[i] = track
+	for _, media := range prod.GetMedias() {
+		if media.Direction != core.DirectionRecvonly || len(media.Codecs) == 0 {
+			continue
 		}
+		codec := media.Codecs[0]
+		var f *fanout
+		for _, t := range s.tracks {
+			if t.media.Kind == media.Kind && media.MatchCodec(t.codec) != nil {
+				f = t
+				break
+			}
+		}
+		if f == nil {
+			f = &fanout{}
+			s.tracks = append(s.tracks, f)
+		}
+		f.media, f.codec = media, codec
+		track, err := prod.GetTrack(media, codec)
+		if err != nil {
+			continue
+		}
+		sender := core.NewSender(media, codec)
+		sender.Handler = f.write
+		sender.HandleRTP(track)
 	}
 	for _, b := range s.backs {
 		if media, codec := sendFor(prod, b.track.Codec); media != nil {
@@ -176,13 +220,17 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 			}
 			switch prodMedia.Direction {
 			case core.DirectionRecvonly:
-				track, err := s.track(prodMedia, prodCodec)
-				if err != nil {
+				f := s.fanoutFor(prodCodec)
+				if f == nil {
+					continue
+				}
+				r := core.NewReceiver(prodMedia, prodCodec)
+				if err := cons.AddTrack(consMedia, consCodec, r); err != nil {
 					return err
 				}
-				if err = cons.AddTrack(consMedia, consCodec, track); err != nil {
-					return err
-				}
+				f.mu.Lock()
+				f.outs = append(f.outs, fanOut{cons: cons, r: r})
+				f.mu.Unlock()
 			case core.DirectionSendonly:
 				p, ok := cons.(core.Producer)
 				if !ok {
@@ -207,8 +255,8 @@ func (s *Source) AddConsumer(ctx context.Context, cons core.Consumer) error {
 	return nil
 }
 
-// RemoveConsumer forgets a consumer's backchannel tracks; its own Stop closes
-// the senders it got from the producer's tracks.
+// RemoveConsumer stops feeding a consumer and forgets its backchannel tracks;
+// its own Stop closes its senders.
 func (s *Source) RemoveConsumer(cons core.Consumer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -219,32 +267,23 @@ func (s *Source) RemoveConsumer(cons core.Consumer) {
 		}
 	}
 	s.backs = backs
-}
-
-// track returns the producer's track for a codec, shared by all consumers.
-func (s *Source) track(media *core.Media, codec *core.Codec) (*core.Receiver, error) {
-	for _, r := range s.receivers {
-		if r.Codec == codec {
-			return r, nil
-		}
-	}
-	track, err := s.prod.GetTrack(media, codec)
-	if err != nil {
-		return nil, err
-	}
-	s.receivers = append(s.receivers, track)
-	return track, nil
-}
-
-func trackFor(prod Producer, codec *core.Codec) *core.Receiver {
-	for _, media := range prod.GetMedias() {
-		if media.Direction != core.DirectionRecvonly {
-			continue
-		}
-		if c := media.MatchCodec(codec); c != nil {
-			if track, err := prod.GetTrack(media, c); err == nil {
-				return track
+	for _, f := range s.tracks {
+		f.mu.Lock()
+		outs := f.outs[:0]
+		for _, o := range f.outs {
+			if o.cons != cons {
+				outs = append(outs, o)
 			}
+		}
+		f.outs = outs
+		f.mu.Unlock()
+	}
+}
+
+func (s *Source) fanoutFor(codec *core.Codec) *fanout {
+	for _, f := range s.tracks {
+		if f.codec == codec {
+			return f
 		}
 	}
 	return nil

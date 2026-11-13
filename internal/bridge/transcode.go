@@ -14,10 +14,12 @@ import (
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 )
 
-// transcoder feeds a Protect channel in a codec the doorbell does not send.
-// It is the source's consumer: the video goes through ffmpeg (MPEG-TS in and
-// out, so timestamps survive), the audio is handed to the Protect consumer
-// unchanged.
+// transcoder runs one ffmpeg pipeline that turns a source's video into a
+// codec the doorbell does not send, for every Protect channel that needs it
+// (video2 and video3 both come from the sub stream, so they share one). It is
+// the source's video consumer; MPEG-TS goes in and out, so timestamps
+// survive. Audio does not pass through it: each channel takes the source's
+// audio directly (audioTap).
 //
 // It exists for Protect's "enhanced encoding": once a camera is switched to
 // H.265, Protect expects every channel in H.265 and drops H.264 segments, but
@@ -26,36 +28,34 @@ import (
 type transcoder struct {
 	core.Connection
 
-	out   *unifi.Consumer
 	ts    *mpegts.Consumer
 	codec string // target: "h264" or "h265"
 	fps   int
 
-	mu    sync.Mutex
-	video bool // a video track reached the MPEG-TS muxer
+	mu       sync.Mutex
+	video    bool             // a video track reached the MPEG-TS muxer
+	outCodec *core.Codec      // ffmpeg's output, once running
+	outs     []*core.Receiver // one per Protect channel
+	done     chan struct{}    // closed when ffmpeg has stopped
 }
 
-func newTranscoder(out *unifi.Consumer, codec string, fps int) *transcoder {
+func newTranscoder(codec string, fps int) *transcoder {
 	return &transcoder{
 		Connection: core.Connection{
 			ID:         core.NewID(),
 			FormatName: "transcode",
 			Medias: []*core.Media{
 				{Kind: core.KindVideo, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecH264}, {Name: core.CodecH265}}},
-				{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecAAC}}},
 			},
 		},
-		out:   out,
 		ts:    mpegts.NewConsumer(),
 		codec: codec,
 		fps:   fps,
+		done:  make(chan struct{}),
 	}
 }
 
 func (t *transcoder) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
-	if media.Kind == core.KindAudio {
-		return t.out.AddTrack(media, codec, track)
-	}
 	t.mu.Lock()
 	t.video = true
 	t.mu.Unlock()
@@ -71,6 +71,46 @@ func (t *transcoder) hasVideo() bool {
 func (t *transcoder) Stop() error {
 	_ = t.ts.Stop()
 	return t.Connection.Stop()
+}
+
+// join attaches a Protect consumer to the output. Each consumer gets a
+// receiver of its own, attached before any packet reaches it, so joining a
+// running pipeline does not race with the packets of the others.
+func (t *transcoder) join(cons *unifi.Consumer) (*core.Receiver, error) {
+	t.mu.Lock()
+	codec := t.outCodec
+	t.mu.Unlock()
+	if codec == nil {
+		return nil, errors.New("transcoder not running")
+	}
+	media := &core.Media{Kind: core.KindVideo, Direction: core.DirectionRecvonly, Codecs: []*core.Codec{codec}}
+	r := core.NewReceiver(media, codec)
+	if err := cons.AddTrack(cons.Medias[0], codec, r); err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.outs = append(t.outs, r)
+	t.mu.Unlock()
+	return r, nil
+}
+
+func (t *transcoder) leave(r *core.Receiver) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for i, o := range t.outs {
+		if o == r {
+			t.outs = append(t.outs[:i], t.outs[i+1:]...)
+			return
+		}
+	}
+}
+
+func (t *transcoder) fanout(pkt *core.Packet) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, r := range t.outs {
+		r.WriteRTP(pkt)
+	}
 }
 
 // ffmpegArgs encodes MPEG-TS video from stdin to the target codec on stdout:
@@ -93,9 +133,8 @@ func ffmpegArgs(codec string, fps int) []string {
 	return append(args, "-pix_fmt", "yuv420p", "-f", "mpegts", "pipe:1")
 }
 
-// run starts ffmpeg and attaches its video to the Protect consumer. It
-// returns once the video track is attached (or failed); the pipeline then
-// runs until ctx ends or ffmpeg exits, after which the consumer is stopped.
+// run starts ffmpeg. It returns once ffmpeg's output is known (or failed);
+// the pipeline then runs until ctx ends or ffmpeg exits, which closes done.
 func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegArgs(t.codec, t.fps)...)
 	stdin, err := cmd.StdinPipe()
@@ -120,6 +159,7 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 		_ = t.ts.Stop()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		close(t.done)
 		if msg := stderr.String(); msg != "" {
 			err = fmt.Errorf("%w: %s", err, msg)
 		}
@@ -130,19 +170,24 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 	if err != nil {
 		return fail(fmt.Errorf("ffmpeg output: %w", err))
 	}
-	var recv *core.Receiver
-	for _, media := range prod.Medias {
-		if media.Kind == core.KindVideo && len(media.Codecs) > 0 {
-			recv, _ = prod.GetTrack(media, media.Codecs[0])
-			if err = t.out.AddTrack(t.out.Medias[0], media.Codecs[0], recv); err != nil {
-				return fail(err)
-			}
+	var media *core.Media
+	for _, m := range prod.Medias {
+		if m.Kind == core.KindVideo && len(m.Codecs) > 0 {
+			media = m
 			break
 		}
 	}
-	if recv == nil {
+	if media == nil {
 		return fail(errors.New("ffmpeg output has no video"))
 	}
+	codec := media.Codecs[0]
+	recv, _ := prod.GetTrack(media, codec)
+	sender := core.NewSender(media, codec)
+	sender.Handler = t.fanout
+	sender.HandleRTP(recv)
+	t.mu.Lock()
+	t.outCodec = codec
+	t.mu.Unlock()
 
 	go func() {
 		err := prod.Start()
@@ -152,11 +197,33 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 			if msg := stderr.String(); msg != "" {
 				err = fmt.Errorf("%w: %s", err, msg)
 			}
-			log.Debug().Err(err).Msg("[bridge] transcoder stopped")
+			log.Warn().Err(err).Msg("[bridge] transcoder stopped")
 		}
-		_ = t.out.Stop()
+		close(t.done)
 	}()
 	return nil
+}
+
+// audioTap hands a source's audio to a Protect consumer whose video comes
+// from a transcoder.
+type audioTap struct {
+	core.Connection
+	out *unifi.Consumer
+}
+
+func newAudioTap(out *unifi.Consumer) *audioTap {
+	return &audioTap{
+		Connection: core.Connection{
+			ID:         core.NewID(),
+			FormatName: "audio",
+			Medias:     []*core.Media{{Kind: core.KindAudio, Direction: core.DirectionSendonly, Codecs: []*core.Codec{{Name: core.CodecAAC}}}},
+		},
+		out: out,
+	}
+}
+
+func (a *audioTap) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
+	return a.out.AddTrack(media, codec, track)
 }
 
 // tailBuffer keeps the last max bytes written (ffmpeg's error output).

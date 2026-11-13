@@ -83,6 +83,9 @@ type Bridge struct {
 	keys       *keyframer
 	enc        [2]encStream // main, sub encoder (encoder.go)
 
+	tmu        sync.Mutex // transcodes; held while one starts
+	transcodes map[string]*sharedTranscode
+
 	snapSem  chan struct{}
 	snap     []byte
 	snapErr  error
@@ -505,26 +508,99 @@ func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source,
 		return true, nil
 	}
 
-	tr := newTranscoder(cons, codec, info.FPS)
-	if err := src.AddConsumer(addCtx, tr); err != nil {
+	tr, release, err := b.transcode(addCtx, src, codec, info.FPS)
+	if err != nil {
+		if !errors.Is(err, errNoVideo) {
+			err = fmt.Errorf("%w (%s %s to %s): %w", errTranscode, channel, upper(info.Codec), upper(codec), err)
+		}
 		return false, err
 	}
-	release := func() {
-		src.RemoveConsumer(tr)
-		_ = tr.Stop()
-	}
-	if !tr.hasVideo() {
+	r, err := tr.join(cons)
+	if err != nil {
 		release()
-		return false, errNoVideo
+		return false, fmt.Errorf("%w: %w", errTranscode, err)
 	}
-	if err := tr.run(ctx, b.opts.FFmpeg); err != nil {
+	tap := newAudioTap(cons)
+	_ = src.AddConsumer(addCtx, tap) // fails only without audio
+	stopped := make(chan struct{})
+	cons.OnStop(func() {
+		close(stopped)
+		tr.leave(r)
+		src.RemoveConsumer(tap)
 		release()
-		_ = cons.Stop()
-		return false, fmt.Errorf("%w (%s %s to %s): %w", errTranscode, channel, upper(info.Codec), upper(codec), err)
-	}
+	})
+	go func() { // ffmpeg ended: so does this stream, and it starts over
+		select {
+		case <-tr.done:
+			_ = cons.Stop()
+		case <-stopped:
+		}
+	}()
 	b.noteCodec(channel, false, fmt.Sprintf("transcoding %s from %s to %s with ffmpeg", channel, upper(info.Codec), upper(codec)))
-	cons.OnStop(release)
 	return false, nil
+}
+
+// transcode returns the running transcoder for a source and codec, starting
+// one if needed, and a release function; the last release stops it.
+func (b *Bridge) transcode(ctx context.Context, src *source.Source, codec string, fps int) (*transcoder, func(), error) {
+	b.tmu.Lock()
+	defer b.tmu.Unlock()
+	key := src.Name + "|" + codec
+	st := b.transcodes[key]
+	if st != nil {
+		select {
+		case <-st.tr.done: // ffmpeg died: start a new one
+			st = nil
+		default:
+		}
+	}
+	if st == nil {
+		tr := newTranscoder(codec, fps)
+		if err := src.AddConsumer(ctx, tr); err != nil {
+			return nil, nil, err
+		}
+		stop := func() {
+			src.RemoveConsumer(tr)
+			_ = tr.Stop()
+		}
+		if !tr.hasVideo() {
+			stop()
+			return nil, nil, errNoVideo
+		}
+		runCtx, cancel := context.WithCancel(context.Background())
+		if err := tr.run(runCtx, b.opts.FFmpeg); err != nil {
+			cancel()
+			stop()
+			return nil, nil, err
+		}
+		st = &sharedTranscode{tr: tr, stop: func() { cancel(); stop() }}
+		if b.transcodes == nil {
+			b.transcodes = map[string]*sharedTranscode{}
+		}
+		b.transcodes[key] = st
+	}
+	st.users++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			b.tmu.Lock()
+			defer b.tmu.Unlock()
+			if st.users--; st.users > 0 {
+				return
+			}
+			st.stop()
+			if b.transcodes[key] == st {
+				delete(b.transcodes, key)
+			}
+		})
+	}
+	return st.tr, release, nil
+}
+
+type sharedTranscode struct {
+	tr    *transcoder
+	stop  func()
+	users int
 }
 
 // noteCodec logs a codec note once per channel and message.
