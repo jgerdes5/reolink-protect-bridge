@@ -508,6 +508,9 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 		Channel:    i,
 		FPS:        info.FPS,
 		Bitrate:    channelBitrates[i],
+		OnKeyframe: func(wait time.Duration) {
+			log.Debug().Msgf("[bridge] %s: keyframe %d ms after Protect asked", channel, wait.Milliseconds())
+		},
 	})
 	cons.RemoteAddr = addr
 	cons.URL = "unifi:" + channel
@@ -547,6 +550,9 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	go func() {
 		defer close(rtt)
 		_ = unifi.ReadFeedback(conn, func(f unifi.Feedback) {
+			if f.WantsKeyframe() {
+				cons.KeyframeWanted()
+			}
 			if !b.onFeedback(channel, passthrough, f, func(body []byte) {
 				select {
 				case rtt <- body:

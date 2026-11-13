@@ -47,7 +47,8 @@ type Consumer struct {
 	done      chan struct{}
 	closer    atomic.Value // io.Closer of the writer, closed by Stop without c.mu
 	onStop    []func()
-	onStopRan bool // OnStop callbacks have run
+	onStopRan bool      // OnStop callbacks have run
+	keyWanted time.Time // Protect asked for a keyframe (KeyframeWanted)
 	stopped   sync.Once
 
 	now func() time.Time // for tests
@@ -70,6 +71,9 @@ type StreamOptions struct {
 	// FFmpegMetadata sends ffmpeg's onMetaData (ECMA array) like unifi-cam-proxy,
 	// instead of the AMF object a real camera sends.
 	FFmpegMetadata bool
+	// OnKeyframe, if set, reports how long after KeyframeWanted the next
+	// keyframe went out (called with the consumer's lock held: keep it short).
+	OnKeyframe func(wait time.Duration)
 }
 
 // streamIDs are the streamId values of video1..video3 (see ChangeVideoSettings).
@@ -153,6 +157,15 @@ func (c *Consumer) TrackCodecs() (video, audio *core.Codec) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.video, c.audio
+}
+
+// KeyframeWanted notes that Protect asked for a keyframe, for OnKeyframe.
+func (c *Consumer) KeyframeWanted() {
+	c.mu.Lock()
+	if c.keyWanted.IsZero() {
+		c.keyWanted = c.now()
+	}
+	c.mu.Unlock()
 }
 
 // CountFrames waits d (or until ctx ends) and returns the video frames
@@ -255,6 +268,12 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 	key := c.isKeyframe(pkt.Payload)
 	if key && c.width == 0 {
 		c.width, c.height = c.size(pkt.Payload)
+	}
+	if key && !c.keyWanted.IsZero() {
+		if c.opts.OnKeyframe != nil {
+			c.opts.OnKeyframe(c.now().Sub(c.keyWanted))
+		}
+		c.keyWanted = time.Time{}
 	}
 
 	if c.wr == nil {
