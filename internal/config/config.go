@@ -37,6 +37,9 @@ type Protect struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Token    string `json:"token"`
+	// CertPin is the console certificate's key (SHA-256 hex), learned on the
+	// first login; cleared when the address changes or on request.
+	CertPin string `json:"certPin,omitempty"`
 }
 
 type Camera struct {
@@ -158,6 +161,11 @@ func (c Config) Validate() error {
 	if err := validHost(c.Protect.Host); err != nil {
 		return fmt.Errorf("Protect address: %w", err)
 	}
+	if p := c.Protect.CertPin; p != "" {
+		if b, err := hex.DecodeString(p); err != nil || len(b) != 32 {
+			return errors.New("Protect certificate pin must be 64 hex digits")
+		}
+	}
 	if c.Doorbell.Port < 0 || c.Doorbell.Port > 65535 {
 		return errors.New("doorbell port must be 1-65535")
 	}
@@ -260,6 +268,7 @@ func (c Config) Options() bridge.Options {
 			Username: c.Protect.Username,
 			Password: c.Protect.Password,
 			Token:    c.Protect.Token,
+			CertPin:  c.Protect.CertPin,
 		},
 		Name:     strings.TrimSpace(c.Camera.Name),
 		MAC:      c.Identity.MAC,

@@ -7,20 +7,20 @@ import (
 
 // Prop is one key/value pair of an AMF0 object. Objects are slices, not maps,
 // because Protect is fed the exact key order a real camera (or ffmpeg) sends.
-type Prop struct {
+type amfProp struct {
 	Key   string
 	Value any
 }
 
 // Object encodes as an AMF0 object (0x03). flvlib3, which the Python proxy uses
 // for onClockSync/onMpma, writes its FLVObject this way.
-type Object []Prop
+type amfObject []amfProp
 
 // ECMAArray encodes as an AMF0 ECMA array (0x08), the type ffmpeg uses for onMetaData.
-type ECMAArray []Prop
+type amfArray []amfProp
 
 // ScriptData encodes a script tag body: the name as AMF0 string, then the value.
-func ScriptData(name string, value any) []byte {
+func scriptData(name string, value any) []byte {
 	b := appendAMFString(nil, name)
 	return appendAMFValue(b, value)
 }
@@ -57,10 +57,10 @@ func appendAMFValue(b []byte, value any) []byte {
 		return append(b, 0x01, 0)
 	case string:
 		return appendAMFString(b, v)
-	case Object:
+	case amfObject:
 		b = append(b, 0x03)
 		return appendAMFProps(b, v)
-	case ECMAArray:
+	case amfArray:
 		n := len(v)
 		b = append(b, 0x08, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 		return appendAMFProps(b, v)
@@ -69,7 +69,7 @@ func appendAMFValue(b []byte, value any) []byte {
 	}
 }
 
-func appendAMFProps(b []byte, props []Prop) []byte {
+func appendAMFProps(b []byte, props []amfProp) []byte {
 	for _, p := range props {
 		b = appendAMFKey(b, p.Key)
 		b = appendAMFValue(b, p.Value)

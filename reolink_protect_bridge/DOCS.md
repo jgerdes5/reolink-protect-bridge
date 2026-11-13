@@ -35,6 +35,10 @@ shows it as a doorbell too, with ring and detection events for automations.
   Protect" turned off.
 - If you change the doorbell or console address, enter its password (and
   adoption token) again.
+- The console's certificate is trusted on the first login; the Protect
+  password is only sent to a console with the same certificate key. After
+  replacing the console's certificate, tick "Trust the certificate the console
+  shows next" on the Connections page.
 
 ## Data
 

@@ -22,7 +22,7 @@ func amfKey(s string) string {
 // flvlib3 (used by clock_sync.py) encodes create_script_tag("onClockSync", FLVObject)
 // as: string marker + name, object marker, key/number pairs, empty key + 0x09.
 func TestScriptDataMatchesFlvlib(t *testing.T) {
-	got := ScriptData("onClockSync", Object{
+	got := scriptData("onClockSync", amfObject{
 		{"streamClock", int64(1234)},
 		{"streamClockBase", 0},
 		{"wallClock", 1.5},
@@ -36,7 +36,7 @@ func TestScriptDataMatchesFlvlib(t *testing.T) {
 }
 
 func TestScriptDataECMAArray(t *testing.T) {
-	got := ScriptData("onMetaData", ECMAArray{{"streamName", "abc"}, {"stereo", false}})
+	got := scriptData("onMetaData", amfArray{{"streamName", "abc"}, {"stereo", false}})
 	want := "02" + amfKey("onMetaData") + "08" + "00000002" +
 		amfKey("streamName") + "02" + amfKey("abc") +
 		amfKey("stereo") + "0100" +
@@ -98,11 +98,11 @@ func TestMuxerClockSync(t *testing.T) {
 
 	require.Equal(t, byte(tagScript), tags[0].typ)
 	require.Equal(t, uint32(5000), tags[0].ts)
-	require.Equal(t, ScriptData("onMpma", mpma), tags[0].payload)
+	require.Equal(t, scriptData("onMpma", mpma), tags[0].payload)
 
 	require.Equal(t, byte(tagScript), tags[1].typ)
 	require.Equal(t, uint32(5000), tags[1].ts)
-	require.Equal(t, hex.EncodeToString(ScriptData("onClockSync", Object{
+	require.Equal(t, hex.EncodeToString(scriptData("onClockSync", amfObject{
 		{"streamClock", int64(5000)},
 		{"streamClockBase", 0},
 		{"wallClock", float64(1700000000123)},

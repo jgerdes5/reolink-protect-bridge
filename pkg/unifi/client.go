@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -215,7 +217,7 @@ func (c *Camera) session(ctx context.Context, freshToken bool) (connected bool, 
 		HandshakeTimeout: 15 * time.Second,
 	}
 
-	u := fmt.Sprintf("wss://%s:%d/camera/1.0/ws?token=%s", c.Host, c.port(), url.QueryEscape(token))
+	u := fmt.Sprintf("wss://%s/camera/1.0/ws?token=%s", net.JoinHostPort(c.Host, strconv.Itoa(c.port())), url.QueryEscape(token))
 	conn, resp, err := dialer.DialContext(ctx, u, header)
 	if err != nil {
 		if resp != nil {
@@ -255,9 +257,9 @@ func (c *Camera) session(ctx context.Context, freshToken bool) (connected bool, 
 			case <-stopPing:
 				return
 			case <-ticker.C:
-				c.mu.Lock()
+				// WriteControl may run alongside other writes (gorilla); no
+				// c.mu, so a stalled message write doesn't delay the ping
 				err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
-				c.mu.Unlock()
 				if err != nil {
 					_ = conn.Close()
 					return

@@ -202,8 +202,8 @@ func (s *settings) close() {
 		s.cancel()
 	}
 	s.mu.Unlock()
-	//lint:ignore SA2001 taking the lock waits for a running flush to end
 	s.flushMu.Lock()
+	//lint:ignore SA2001 taking the lock waits for a running flush to end
 	s.flushMu.Unlock()
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -322,6 +323,45 @@ func TestProtectAdoptionToken(t *testing.T) {
 	p.Password = "wrong"
 	_, err = p.AdoptionToken(context.Background())
 	require.Error(t, err)
+}
+
+// The console's key is trusted on first use; a different key later gets no
+// password.
+func TestProtectCertPin(t *testing.T) {
+	logins := 0
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		logins++
+		w.Header().Set("X-CSRF-Token", "csrf1")
+	})
+	mux.HandleFunc("/proxy/protect/api/cameras/manage-payload", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"mgmt":{"token":"adopt-me"}}`))
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	want := CertPinOf(srv.Certificate())
+
+	var learned string
+	p := &ProtectClient{Host: u.Host, Username: "u", Password: "secret", OnPin: func(pin string) { learned = pin }}
+	_, err := p.AdoptionToken(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, want, learned)
+	require.Equal(t, 1, logins)
+
+	// the pinned key: fine
+	p = &ProtectClient{Host: u.Host, Username: "u", Password: "secret", CertPin: want}
+	_, err = p.AdoptionToken(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 2, logins)
+
+	// another key: refused before the password goes out
+	p = &ProtectClient{Host: u.Host, Username: "u", Password: "secret", CertPin: strings.Repeat("ab", 32)}
+	_, err = p.AdoptionToken(context.Background())
+	var pinErr *PinError
+	require.ErrorAs(t, err, &pinErr)
+	require.Equal(t, want, pinErr.Got)
+	require.Equal(t, 2, logins)
 }
 
 // A ChangeVideoSettings that names only some channels must not report the

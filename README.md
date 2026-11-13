@@ -178,6 +178,13 @@ If you change the doorbell or console address, enter its password (and
 adoption token, if you use one) again. Stored passwords are only sent to the
 address they were entered for.
 
+The console's certificate is trusted on the first login (most consoles use a
+self-signed one) and its key is shown on the Connections page. After that the
+Protect password is only sent to a console with the same key; a certificate
+that is valid for the console's name under the usual public authorities (e.g.
+Let's Encrypt) is always accepted. If you replace the console's self-signed
+certificate, tick "Trust the certificate the console shows next" and save.
+
 ## Privacy mode
 
 A privacy mask over the whole picture in Protect works as a privacy mode: the
@@ -198,7 +205,10 @@ picture is masked hasn't been tested yet.
 
 - **Camera doesn't appear in Protect:** check the log on the status page.
   "protect login: HTTP 401/403" means the user is wrong, uses SSO/2FA or lacks
-  Protect access.
+  Protect access. "the console's certificate changed" means the console showed
+  a different certificate than on the first login: if you replaced it
+  yourself, trust the new one on the Connections page; otherwise something on
+  your network may be pretending to be the console.
 - **Live view stutters or recordings have gaps:** make sure the host's clock is
   synced (NTP).
 - **No talkback:** check that UDP 7004 from the console to the bridge isn't

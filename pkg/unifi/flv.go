@@ -125,21 +125,21 @@ func (m *muxer) appendTag(b []byte, tagType byte, at time.Duration, parts ...[]b
 // trailer) starts at 0, which keeps trailer = streamClockBase + tag time as on
 // a camera.
 func (m *muxer) appendSync(b []byte, at time.Duration, now time.Time) []byte {
-	b = m.appendTag(b, tagScript, at, ScriptData("onMpma", mpma))
+	b = m.appendTag(b, tagScript, at, scriptData("onMpma", mpma))
 
-	sync := Object{
+	sync := amfObject{
 		{"streamClock", int64(flvTime(at))},
 		{"streamClockBase", 0},
 		{"wallClock", float64(now.UnixMilli())},
 	}
-	return m.appendTag(b, tagScript, at, ScriptData("onClockSync", sync))
+	return m.appendTag(b, tagScript, at, scriptData("onClockSync", sync))
 }
 
 // mpma is the fixed onMpma body clock_sync.py sends (bitrate hints).
-var mpma = Object{
-	{"cs", Object{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
-	{"m", Object{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
+var mpma = amfObject{
+	{"cs", amfObject{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
+	{"m", amfObject{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
 	{"r", 0},
-	{"sp", Object{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
+	{"sp", amfObject{{"cur", 1500000}, {"max", 1500000}, {"min", 1500000}}},
 	{"t", 75000.0},
 }

@@ -127,3 +127,4 @@ button.link { background: none; border: 0; color: var(--accent); padding: 4px; o
 .found button:hover { background: var(--bg); }
 .found .other { color: var(--muted); }
 .danger { border-color: var(--bad); }
+#pin-value { word-break: break-all; font-size: 12px; }

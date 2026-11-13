@@ -48,7 +48,8 @@ type Protect struct {
 	Host     string `json:"host"`
 	Username string `json:"username,omitempty"` // local Protect user, for adoption tokens (and ring "api")
 	Password string `json:"password,omitempty"`
-	Token    string `json:"token,omitempty"` // or a fixed adoption token
+	Token    string `json:"token,omitempty"`   // or a fixed adoption token
+	CertPin  string `json:"certPin,omitempty"` // console key for the login (unifi.ProtectClient.CertPin)
 }
 
 // Options configure a bridge.
@@ -66,6 +67,8 @@ type Options struct {
 	Settings bool // apply Protect's camera settings to the doorbell
 
 	FFmpeg string // ffmpeg binary, default "ffmpeg"
+	// OnCertPin stores the console key learned on the first login.
+	OnCertPin func(pin string) `json:"-"`
 }
 
 // Bridge is one running doorbell.
@@ -163,20 +166,25 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The address may carry the console's web port ("console:443"): the
+	// login uses it as given, the camera protocol (7442) and talkback only
+	// the host.
+	console := hostOnly(opts.Protect.Host)
 	ip := opts.IP
 	if ip == "" {
-		ip = LocalIP(opts.Protect.Host)
+		ip = LocalIP(console)
 	}
 
 	tokens := &tokenSource{token: opts.Protect.Token}
 	var protect *unifi.ProtectClient
 	if opts.Protect.Username != "" {
-		protect = &unifi.ProtectClient{Host: opts.Protect.Host, Username: opts.Protect.Username, Password: opts.Protect.Password}
+		protect = &unifi.ProtectClient{Host: opts.Protect.Host, Username: opts.Protect.Username, Password: opts.Protect.Password,
+			CertPin: opts.Protect.CertPin, OnPin: opts.OnCertPin}
 		tokens.protect = protect
 	}
 
 	b.proto = &unifi.Camera{
-		Host:     opts.Protect.Host,
+		Host:     console,
 		Name:     opts.Name,
 		MAC:      mac,
 		IP:       ip,
@@ -335,7 +343,10 @@ func probeSource(ctx context.Context, src *source.Source) (streamInfo, error) {
 	}
 	info := streamInfo{codec: codecName(video), audio: audio != nil}
 
-	frames := cons.CountFrames(3 * time.Second)
+	frames := cons.CountFrames(ctx, 3*time.Second)
+	if ctx.Err() != nil {
+		return streamInfo{}, ctx.Err()
+	}
 	info.fps = commonFPS(frames / 3)
 	info.width, info.height = cons.Size()
 	if info.width == 0 && info.codec == "h264" {
@@ -913,6 +924,14 @@ func NewMAC(seed string) string {
 }
 
 // LocalIP is the address this host uses to reach host.
+// hostOnly drops a port from "host:port" or "[v6]:port".
+func hostOnly(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	return strings.Trim(h, "[]")
+}
+
 func LocalIP(host string) string {
 	conn, err := net.Dial("udp", net.JoinHostPort(host, "7442"))
 	if err != nil {

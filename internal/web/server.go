@@ -293,6 +293,7 @@ type configView struct {
 		Username string `json:"username"`
 		Password secret `json:"password"`
 		Token    secret `json:"token"`
+		CertPin  string `json:"certPin"` // not secret: the key the console showed
 	} `json:"protect"`
 	Camera   config.Camera `json:"camera"`
 	Identity struct {
@@ -314,6 +315,7 @@ func viewOf(c config.Config) configView {
 	v.Protect.Host, v.Protect.Username = c.Protect.Host, c.Protect.Username
 	v.Protect.Password.Set = c.Protect.Password != ""
 	v.Protect.Token.Set = c.Protect.Token != ""
+	v.Protect.CertPin = c.Protect.CertPin
 	v.Camera = c.Camera
 	v.Identity.MAC = c.Identity.MAC
 	v.Advanced = advanced{Listen: c.Web.Listen, FFmpeg: c.FFmpeg}
@@ -341,6 +343,7 @@ type configInput struct {
 		Token         string `json:"token"`
 		ClearPassword bool   `json:"clearPassword"`
 		ClearToken    bool   `json:"clearToken"`
+		ClearCertPin  bool   `json:"clearCertPin"` // trust the certificate the console shows next
 	} `json:"protect"`
 	Camera   *config.Camera `json:"camera"`
 	Advanced *advanced      `json:"advanced"`
@@ -389,6 +392,9 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				if c.Protect.Token != "" && strings.TrimSpace(p.Token) == "" && !p.ClearToken {
 					return errReenter("Protect console address", "the adoption token (or remove it)")
 				}
+			}
+			if host != c.Protect.Host || p.ClearCertPin {
+				c.Protect.CertPin = "" // learned again on the next login
 			}
 			c.Protect.Host = host
 			c.Protect.Username = strings.TrimSpace(p.Username)

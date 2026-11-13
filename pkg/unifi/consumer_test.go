@@ -193,7 +193,7 @@ func hexOf(b []byte) string {
 func TestConsumerMetadataChannels(t *testing.T) {
 	for ch, streamID := range []float64{1, 2, 4} {
 		c := NewConsumer(StreamOptions{StreamName: "x", Channel: ch})
-		meta := c.metadata(640, 480).(Object)
+		meta := c.metadata(640, 480).(amfObject)
 		got := map[string]any{}
 		for _, p := range meta {
 			got[p.Key] = p.Value

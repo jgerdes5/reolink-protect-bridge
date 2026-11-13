@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -381,6 +382,36 @@ func TestHostChangeNeedsSecret(t *testing.T) {
 	require.Equal(t, "door-pw2", cfg.Doorbell.Password)
 	require.Equal(t, "new-pw", cfg.Protect.Password)
 	require.Empty(t, cfg.Protect.Token)
+}
+
+// The console's certificate key is shown, kept while the address stays, and
+// forgotten when the address changes or the user asks.
+func TestCertPin(t *testing.T) {
+	c, store := newTest(t)
+	c.do("POST", "/api/setup", map[string]string{"password": "secret123"}, true)
+	pin := strings.Repeat("ab", 32)
+	protect := map[string]any{"host": "192.0.2.1", "username": "local", "password": "prot-pw"}
+	res, out := c.do("PUT", "/api/config", map[string]any{"protect": protect}, true)
+	require.Equal(t, 200, res.StatusCode, out)
+	_, err := store.Update(func(cfg *config.Config) error { cfg.Protect.CertPin = pin; return nil })
+	require.NoError(t, err)
+
+	_, out = c.do("GET", "/api/config", nil, true)
+	require.Equal(t, pin, out["protect"].(map[string]any)["certPin"])
+
+	res, _ = c.do("PUT", "/api/config", map[string]any{"protect": map[string]any{"host": "192.0.2.1", "username": "local"}}, true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, pin, store.Get().Protect.CertPin)
+
+	res, _ = c.do("PUT", "/api/config", map[string]any{"protect": map[string]any{"host": "192.0.2.1", "username": "local", "clearCertPin": true}}, true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Empty(t, store.Get().Protect.CertPin)
+
+	_, err = store.Update(func(cfg *config.Config) error { cfg.Protect.CertPin = pin; return nil })
+	require.NoError(t, err)
+	res, _ = c.do("PUT", "/api/config", map[string]any{"protect": map[string]any{"host": "192.0.2.2", "username": "local", "password": "prot-pw"}}, true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Empty(t, store.Get().Protect.CertPin)
 }
 
 // Parallel wrong passwords must not get more than 5 tries past the limiter.

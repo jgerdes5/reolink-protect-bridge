@@ -38,6 +38,10 @@ type Detection struct {
 	Zones  map[int]string    // zone id -> enter | moving | leave
 	Lines  map[int]LineCross // line id -> counts
 	Loiter map[int]string    // loiter zone id -> enter | moving | leave
+	// Final marks the last frame of an event (zones left as the object is
+	// gone): sent even right after another frame, and not kept as the boxes
+	// the next event starts with.
+	Final bool
 }
 
 const (
@@ -53,10 +57,12 @@ func (c *Camera) Detections(d Detection) {
 	}
 	c.ev.mu.Lock()
 	defer c.ev.mu.Unlock()
-	c.ev.det, c.ev.detAt = d, time.Now()
+	if !d.Final {
+		c.ev.det, c.ev.detAt = d, time.Now()
+	}
 
 	e := c.ev.smart
-	if e == nil || time.Since(c.ev.movingAt) < movingInterval {
+	if e == nil || (!d.Final && time.Since(c.ev.movingAt) < movingInterval) {
 		return
 	}
 	c.ev.movingAt = time.Now()

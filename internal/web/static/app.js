@@ -263,6 +263,9 @@ async function loadConfig() {
   setSecret(c, "d.password", config.doorbell.password.set);
   setSecret(c, "p.password", config.protect.password.set);
   setSecret(c, "p.token", config.protect.token.set);
+  $("#pin-row").hidden = !config.protect.certPin;
+  $("#pin-value").textContent = config.protect.certPin || "";
+  c["p.clearpin"].checked = false;
   hostChanged();
 
   const o = $("#opt-form");
@@ -347,6 +350,7 @@ $("#conn-form").addEventListener("submit", async ev => {
       token: f["p.token"].value.trim(),
       clearPassword: f["p.password"].dataset.clear === "1",
       clearToken: f["p.token"].dataset.clear === "1",
+      clearCertPin: f["p.clearpin"].checked,
     },
   };
   await busy($("button[type=submit]", f), async () => {

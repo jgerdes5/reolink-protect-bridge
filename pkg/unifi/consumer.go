@@ -2,6 +2,7 @@ package unifi
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -154,12 +155,16 @@ func (c *Consumer) TrackCodecs() (video, audio *core.Codec) {
 	return c.video, c.audio
 }
 
-// CountFrames waits d and returns the video frames received meanwhile.
-func (c *Consumer) CountFrames(d time.Duration) int {
+// CountFrames waits d (or until ctx ends) and returns the video frames
+// received meanwhile.
+func (c *Consumer) CountFrames(ctx context.Context, d time.Duration) int {
 	c.mu.Lock()
 	start := c.frames
 	c.mu.Unlock()
-	time.Sleep(d)
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.frames - start
@@ -344,7 +349,7 @@ func (c *Consumer) appendInit(b []byte, keyframe []byte) []byte {
 	}
 
 	b = append(b, fileHeader(c.audio != nil)...)
-	b = c.mux.appendTag(b, tagScript, 0, ScriptData("onMetaData", c.metadata(c.width, c.height)))
+	b = c.mux.appendTag(b, tagScript, 0, scriptData("onMetaData", c.metadata(c.width, c.height)))
 
 	if c.hevc {
 		if vps, sps, pps := c.hevcParameterSets(keyframe); len(vps) > 0 && len(sps) > 0 && len(pps) > 0 {
@@ -472,16 +477,16 @@ func (c *Consumer) metadata(width, height int) any {
 	}
 
 	ch := min(max(c.opts.Channel, 0), 2)
-	var m Object
+	var m amfObject
 	if c.audio != nil {
 		// the camera removes the audio keys from a stream without audio
-		m = Object{
+		m = amfObject{
 			{"audioBandwidth", 32000},
 			{"audioChannels", max(int(c.audio.Channels), 1)},
 			{"audioFrequency", int(c.audio.ClockRate)},
 		}
 	}
-	return append(m, Object{
+	return append(m, amfObject{
 		{"channelId", ch},
 		{"extendedFormat", true}, // extendedFlv serializer, as Protect requests
 		{"hasAudio", c.audio != nil},
@@ -495,32 +500,32 @@ func (c *Consumer) metadata(width, height int) any {
 	}...)
 }
 
-func (c *Consumer) ffmpegMetadata(width, height int) ECMAArray {
-	m := ECMAArray{
+func (c *Consumer) ffmpegMetadata(width, height int) amfArray {
+	m := amfArray{
 		{"duration", 0.0},
 		{"width", width},
 		{"height", height},
 		{"videodatarate", 0.0},
 	}
 	if c.opts.FPS > 0 {
-		m = append(m, Prop{"framerate", c.opts.FPS})
+		m = append(m, amfProp{"framerate", c.opts.FPS})
 	}
-	m = append(m, Prop{"videocodecid", int(c.codecID())})
+	m = append(m, amfProp{"videocodecid", int(c.codecID())})
 
 	if c.audio != nil {
 		m = append(m,
-			Prop{"audiodatarate", 0.0},
-			Prop{"audiosamplerate", int(c.audio.ClockRate)},
-			Prop{"audiosamplesize", 16},
-			Prop{"stereo", c.audio.Channels == 2},
-			Prop{"audiocodecid", 10},
+			amfProp{"audiodatarate", 0.0},
+			amfProp{"audiosamplerate", int(c.audio.ClockRate)},
+			amfProp{"audiosamplesize", 16},
+			amfProp{"stereo", c.audio.Channels == 2},
+			amfProp{"audiocodecid", 10},
 		)
 	}
 
 	return append(m,
-		Prop{"streamName", c.opts.StreamName},
-		Prop{"encoder", "Lavf61.7.100"},
-		Prop{"filesize", 0.0},
+		amfProp{"streamName", c.opts.StreamName},
+		amfProp{"encoder", "Lavf61.7.100"},
+		amfProp{"filesize", 0.0},
 	)
 }
 
@@ -660,11 +665,11 @@ func (c *Consumer) RTT(body []byte) {
 			rtt = float64(now.Sub(at).Round(time.Millisecond).Milliseconds())
 		}
 	}
-	msg := Object{
+	msg := amfObject{
 		{"encDelay", 0.0},
 		{"id", string(body[0:4])},
 		{"rttMillis", rtt},
 	}
 	c.mux.stamp = now
-	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.mux.last, ScriptData("onRtt", msg)))
+	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.mux.last, scriptData("onRtt", msg)))
 }

@@ -185,6 +185,7 @@ func (r *recordingSink) SmartDetect(object string) {
 	// zones still occupied when the object is gone are left: report that
 	// while the event is still open
 	if last := r.b.tracker.setObject(object); r.detect != nil && len(last.Boxes) > 0 {
+		last.Final = true
 		r.detect(last)
 	}
 	r.eventSink.SmartDetect(object)

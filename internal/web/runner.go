@@ -46,7 +46,23 @@ func (r *Runner) Restart() {
 		r.log.Info().Strs("missing", cfg.Missing()).Msg("[web] configuration incomplete, bridge not started")
 		return
 	}
-	b, err := bridge.New(cfg.Options(), r.log)
+	opts := cfg.Options()
+	host := cfg.Protect.Host
+	opts.OnCertPin = func(pin string) {
+		// only for the address it was learned on, and never over a pin
+		_, err := r.store.Update(func(c *config.Config) error {
+			if c.Protect.Host == host && c.Protect.CertPin == "" {
+				c.Protect.CertPin = pin
+			}
+			return nil
+		})
+		if err != nil {
+			r.log.Warn().Err(err).Msg("[web] can't save the console certificate")
+			return
+		}
+		r.log.Info().Str("key", pin).Msg("[web] console certificate trusted")
+	}
+	b, err := bridge.New(opts, r.log)
 	if err != nil {
 		r.log.Error().Err(err).Msg("[web] bridge not started")
 		r.mu.Lock()

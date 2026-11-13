@@ -112,6 +112,11 @@
         <p class="hint" data-hint="p.password"></p>
         <label>Adoption token <input name="p.token" type="password" autocomplete="off" data-secret></label>
         <p class="hint" data-hint="p.token"></p>
+        <div id="pin-row" hidden>
+          <p class="hint">Console certificate key: <code id="pin-value"></code><br>
+          Trusted on the first login; the password is never sent to a console with a different key.</p>
+          <label class="check"><input type="checkbox" name="p.clearpin"> Trust the certificate the console shows next (after replacing it)</label>
+        </div>
       </div>
       <div class="actions">
         <p class="error" data-error></p>

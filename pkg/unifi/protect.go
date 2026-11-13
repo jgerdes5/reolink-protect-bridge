@@ -3,11 +3,15 @@ package unifi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -21,6 +25,12 @@ type ProtectClient struct {
 	Host     string
 	Username string
 	Password string
+	// CertPin is the SHA-256 (hex) of the console's public key; empty means
+	// learn it on the first login and report it through OnPin. See verify.
+	CertPin string
+	OnPin   func(pin string)
+
+	pinMu sync.Mutex
 
 	mu        sync.Mutex // one login session at a time
 	client    *http.Client
@@ -29,10 +39,73 @@ type ProtectClient struct {
 	loggedIn  time.Time // session reused by Ring
 }
 
+// PinError is a console certificate that differs from the pinned one.
+type PinError struct{ Got, Want string }
+
+func (e *PinError) Error() string {
+	return fmt.Sprintf("the console's certificate changed (key %s, trusted %s): refusing to send the password; "+
+		"if you replaced the console's certificate, trust the new one on the Connections page", short(e.Got), short(e.Want))
+}
+
+func short(pin string) string {
+	if len(pin) > 16 {
+		return pin[:16] + "…"
+	}
+	return pin
+}
+
+// CertPinOf is the pin of a certificate: SHA-256 of its public key, so a
+// renewed certificate with the same key still matches.
+func CertPinOf(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
+}
+
+// verify runs on every TLS connection to the console, before the password
+// is sent. A certificate valid for the host name under the system roots
+// (e.g. Let's Encrypt) is accepted as it is. Any other (the self-signed
+// default) must match the pinned key; without a pin the first one seen is
+// trusted and pinned (trust on first use).
+func (p *ProtectClient) verify(cs tls.ConnectionState) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("console sent no certificate")
+	}
+	leaf := cs.PeerCertificates[0]
+	inter := x509.NewCertPool()
+	for _, c := range cs.PeerCertificates[1:] {
+		inter.AddCert(c)
+	}
+	if _, err := leaf.Verify(x509.VerifyOptions{DNSName: cs.ServerName, Intermediates: inter}); err == nil && cs.ServerName != "" {
+		return nil
+	}
+
+	pin := CertPinOf(leaf)
+	p.pinMu.Lock()
+	want := p.CertPin
+	if want == "" {
+		p.CertPin = pin
+	}
+	onPin := p.OnPin
+	p.pinMu.Unlock()
+	switch {
+	case want == "":
+		if onPin != nil {
+			onPin(pin)
+		}
+		return nil
+	case want != pin:
+		return &PinError{Got: pin, Want: want}
+	}
+	return nil
+}
+
 // sessionMaxAge is how long Ring reuses a login before logging in again.
 const sessionMaxAge = 30 * time.Minute
 
 func (p *ProtectClient) base() string {
+	if ip := net.ParseIP(p.Host); ip != nil && ip.To4() == nil {
+		return "https://[" + p.Host + "]" // bare IPv6
+	}
 	return "https://" + p.Host
 }
 
@@ -40,7 +113,9 @@ func (p *ProtectClient) login(ctx context.Context) error {
 	// A fresh cookie jar per login, one transport for the client's lifetime.
 	if p.transport == nil {
 		p.transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // self-signed console cert
+			// Consoles mostly use self-signed certificates: verify checks a
+			// publicly trusted one normally and pins any other.
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true, VerifyConnection: p.verify},
 			IdleConnTimeout: 30 * time.Second,
 		}
 	}

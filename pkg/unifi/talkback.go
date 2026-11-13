@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -66,10 +67,15 @@ func (c *Camera) listenTalkback(port int) error {
 
 	// Only the Protect console may play audio on the speaker. Resolved before
 	// the lock; without its address nothing listens (never open to anyone).
+	host := c.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h // "console:443" or "[fd00::1]:443"
+	}
+	host = strings.Trim(host, "[]")
 	allowed := map[string]bool{}
-	if ip := net.ParseIP(c.Host); ip != nil {
+	if ip := net.ParseIP(host); ip != nil {
 		allowed[ip.String()] = true
-	} else if ips, err := net.LookupIP(c.Host); err == nil {
+	} else if ips, err := net.LookupIP(host); err == nil {
 		for _, ip := range ips {
 			allowed[ip.String()] = true
 		}

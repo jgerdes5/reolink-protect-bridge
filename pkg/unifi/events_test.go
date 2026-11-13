@@ -305,6 +305,16 @@ func TestSmartDetectRealBoxes(t *testing.T) {
 	require.Equal(t, 1.0, line["person"].(map[string]any)["crosslineA2B"])
 	require.Equal(t, []any{5.0}, moving["descriptors"].([]any)[0].(map[string]any)["lines"])
 
+	// the last frame leaves the zones at once, right after the moving one,
+	// and is not kept for the next event
+	cam.Detections(Detection{Boxes: []Box{person}, Zones: map[int]string{3: "leave"}, Final: true})
+	_, final := readMsg(t, conn)
+	require.Equal(t, "moving", final["edgeType"])
+	require.Equal(t, "leave", final["zonesStatus"].(map[string]any)["3"].(map[string]any)["status"])
+	cam.ev.mu.Lock()
+	require.Equal(t, "moving", cam.ev.det.Zones[3])
+	cam.ev.mu.Unlock()
+
 	// the crop's coord is the real box it was cut from, at the event's start
 	cam.SmartDetect("")
 	_, leave := readMsg(t, conn)
