@@ -56,6 +56,8 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 		return
 	}
 	enc := encoderState(body, caps)
+	// Written even when Options.Settings is off: Protect cuts its segments at
+	// keyframes and expects one every second, as a UniFi camera sends.
 	if gopChange(body) {
 		if err = client.SetConfig(ctx, msgEncSet, ch, body); err != nil {
 			log.Warn().Err(err).Msg("[settings] keyframe interval")

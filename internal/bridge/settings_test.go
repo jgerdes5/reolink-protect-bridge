@@ -286,3 +286,25 @@ func TestDayNightChange(t *testing.T) {
 	require.Equal(t, "default", b.Value("DayNightThreshold/threshold"))
 	require.Equal(t, "100", b.Value("DayNightThreshold/thresholdval/cur")) // kept for the next custom
 }
+
+// Privacy mode on top of more zones than the doorbell stores: the full-frame
+// zone has the highest id, and it alone is applied.
+func TestPrivacyModeWithManyZones(t *testing.T) {
+	var masks []unifi.Mask
+	for i := range 5 {
+		masks = append(masks, unifi.Mask{ID: i, Coord: []float64{0, 0, 10, 0, 10, 10}})
+	}
+	masks = append(masks, unifi.Mask{ID: 9, Coord: []float64{0, 0, 1000, 0, 1000, 1000, 0, 1000}})
+	b := parse(t, `<body><Shelter version="1.1"><channelId>0</channelId><enable>0</enable><shelterList></shelterList></Shelter></body>`)
+	require.True(t, maskChange(masks)(b))
+	list := b.Find("Shelter/shelterList").Children
+	require.Equal(t, "1", list[0].Value("enable"))
+	require.Equal(t, strconv.Itoa(1000<<16|1000), list[0].Value("width"))
+	for _, e := range list[1:] {
+		require.Equal(t, "0", e.Value("enable"))
+	}
+
+	// as the doorbell reports it back, deleted entries included: no change
+	b = parse(t, string(b.Marshal()))
+	require.False(t, maskChange(masks)(b))
+}

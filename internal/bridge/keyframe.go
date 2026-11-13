@@ -127,9 +127,14 @@ func streamType(channel string) string {
 }
 
 // onFeedback handles a message Protect sent back on a channel's socket. It
-// returns false if the stream should end.
-func (b *Bridge) onFeedback(channel string, passthrough bool, f unifi.Feedback) bool {
+// returns false if the stream should end. RTT probes go to rtt, which must
+// not block (it runs on the socket's reading goroutine).
+func (b *Bridge) onFeedback(channel string, passthrough bool, f unifi.Feedback, rtt func(body []byte)) bool {
 	switch {
+	case f.Type == unifi.FeedbackRTT:
+		if rtt != nil {
+			rtt(f.Body)
+		}
 	case f.WantsKeyframe():
 		if passthrough { // ffmpeg makes its own keyframes every second
 			b.keys.request(streamType(channel))

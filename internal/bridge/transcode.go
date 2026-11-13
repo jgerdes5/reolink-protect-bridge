@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/mpegts"
@@ -134,8 +135,9 @@ func ffmpegArgs(codec string, fps int) []string {
 }
 
 // run starts ffmpeg. It returns once ffmpeg's output is known (or failed);
-// the pipeline then runs until ctx ends or ffmpeg exits, which closes done.
-func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
+// startCtx bounds that wait (ffmpeg is killed when it ends first). The
+// pipeline then runs until ctx ends or ffmpeg exits, which closes done.
+func (t *transcoder) run(startCtx, ctx context.Context, ffmpeg string) error {
 	cmd := exec.CommandContext(ctx, ffmpeg, ffmpegArgs(t.codec, t.fps)...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -151,10 +153,14 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 		return fmt.Errorf("ffmpeg: %w", err)
 	}
 
+	in := &pipeWriter{w: stdin, attached: make(chan struct{})}
+	written := make(chan struct{})
 	go func() {
-		_, _ = t.ts.WriteTo(stdin)
+		defer close(written)
+		_, _ = t.ts.WriteTo(in)
 		_ = stdin.Close()
 	}()
+	t.waitAttached(in, written)
 	fail := func(err error) error {
 		_ = t.ts.Stop()
 		_ = cmd.Process.Kill()
@@ -166,7 +172,15 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 		return err
 	}
 
+	// no output yet (a stalled source): killing ffmpeg ends mpegts.Open
+	stopKill := context.AfterFunc(startCtx, func() { _ = cmd.Process.Kill() })
 	prod, err := mpegts.Open(stdout)
+	if !stopKill() {
+		if err == nil {
+			_ = prod.Stop()
+		}
+		return fail(fmt.Errorf("ffmpeg start: %w", context.Cause(startCtx)))
+	}
 	if err != nil {
 		return fail(fmt.Errorf("ffmpeg output: %w", err))
 	}
@@ -178,6 +192,7 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 		}
 	}
 	if media == nil {
+		_ = prod.Stop()
 		return fail(errors.New("ffmpeg output has no video"))
 	}
 	codec := media.Codecs[0]
@@ -192,6 +207,8 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 	go func() {
 		err := prod.Start()
 		_ = t.ts.Stop()
+		// ffmpeg may still run after a demux error: Wait alone would hang
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		if ctx.Err() == nil {
 			if msg := stderr.String(); msg != "" {
@@ -202,6 +219,45 @@ func (t *transcoder) run(ctx context.Context, ffmpeg string) error {
 		close(t.done)
 	}()
 	return nil
+}
+
+// pipeWriter is ffmpeg's stdin as the MPEG-TS consumer's output. It hides
+// the pipe's Close: core.WriteBuffer.Close would otherwise only close the pipe
+// and leave WriteTo waiting for a failed write, which a stalled source never
+// makes. A zero-length write marks that the buffer writes here.
+type pipeWriter struct {
+	w        io.Writer
+	attached chan struct{}
+	once     sync.Once
+}
+
+func (p *pipeWriter) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		p.once.Do(func() { close(p.attached) })
+		return 0, nil
+	}
+	return p.w.Write(b)
+}
+
+// waitAttached returns once the MPEG-TS consumer writes to in (or WriteTo
+// has ended). core.WriteBuffer.Close reads its writer without the lock that
+// WriteTo sets it under: an empty write through the buffer takes that lock
+// and reaches in only after the switch, so Stop is ordered after it.
+func (t *transcoder) waitAttached(in *pipeWriter, written chan struct{}) {
+	wb, ok := t.ts.Transport.(io.Writer)
+	if !ok {
+		return
+	}
+	for {
+		_, _ = wb.Write(nil)
+		select {
+		case <-in.attached:
+			return
+		case <-written:
+			return
+		case <-time.After(time.Millisecond):
+		}
+	}
 }
 
 // audioTap hands a source's audio to a Protect consumer whose video comes

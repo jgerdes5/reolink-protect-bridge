@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"math"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,10 @@ import (
 // are collected for settleDelay and applied together over one short
 // connection, each group as GET -> modify -> SET, and only if a value differs.
 
-const settleDelay = time.Second
+const (
+	settleDelay   = time.Second
+	settingsRetry = time.Minute // backoff cap while the doorbell is unreachable
+)
 
 // reolinkAI maps Protect object types to Reolink AI types.
 var reolinkAI = map[string]string{"person": "people", "vehicle": "vehicle", "animal": "dog_cat"}
@@ -38,12 +42,60 @@ type settings struct {
 	osd      *unifi.OSD
 	video    map[string]unifi.Video // channel -> frame rate / bitrate
 	timer    *time.Timer
+	retry    time.Duration // current backoff after a failed dial, 0 = none
+	closed   bool
 	enabled  map[string]bool // Protect object types with smart detection on; nil = all
+
+	// flushMu is held for a whole flush: a timer re-armed while a flush runs
+	// fires a second one, which must not GET before the first one's SET.
+	flushMu sync.Mutex
+	ctx     context.Context // cancelled by close; nil = never
+	cancel  context.CancelFunc
+	dial    func(ctx context.Context) (*baichuan.Client, error) // for tests; nil = Bridge.dialControl
+}
+
+func newSettings(b *Bridge, apply bool) *settings {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &settings{b: b, apply: apply, ctx: ctx, cancel: cancel}
+}
+
+// mergeFields copies the fields src has (non-nil pointers and slices) into
+// dst: Protect sends changes as partial messages, which add to what is still
+// pending instead of replacing it.
+func mergeFields[T any](dst *T, src *T) {
+	d, v := reflect.ValueOf(dst).Elem(), reflect.ValueOf(src).Elem()
+	for i := range v.NumField() {
+		if !v.Type().Field(i).IsExported() {
+			continue
+		}
+		f := v.Field(i)
+		switch f.Kind() {
+		case reflect.Pointer, reflect.Slice, reflect.Map:
+			if !f.IsNil() {
+				d.Field(i).Set(f)
+			}
+		default:
+			d.Field(i).Set(f)
+		}
+	}
+}
+
+// merged returns old with new's fields on top (old may be nil).
+func merged[T any](old, new *T) *T {
+	if old == nil {
+		return new
+	}
+	if new == nil {
+		return old
+	}
+	out := *old
+	mergeFields(&out, new)
+	return &out
 }
 
 func (s *settings) ISP(v unifi.ISP) {
 	s.mu.Lock()
-	s.isp = &v
+	s.isp = merged(s.isp, &v)
 	if v.HdrMode != nil && *v.HdrMode != s.hdrMode {
 		s.hdrMode = *v.HdrMode
 		s.hdrDirty = s.hdrOn != nil
@@ -62,7 +114,7 @@ func (s *settings) HDR(on bool) {
 
 func (s *settings) SoundLed(v unifi.SoundLed) {
 	s.mu.Lock()
-	s.sound = &v
+	s.sound = merged(s.sound, &v)
 	s.mu.Unlock()
 	s.schedule()
 }
@@ -119,39 +171,142 @@ func (s *settings) schedule() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.retry = 0 // new values: try them soon
+	s.arm(settleDelay)
+}
+
+// arm (re)starts the flush timer. Must be called with s.mu held.
+func (s *settings) arm(d time.Duration) {
+	if s.closed {
+		return
+	}
 	if s.timer == nil {
-		s.timer = time.AfterFunc(settleDelay, s.flush)
+		s.timer = time.AfterFunc(d, s.flush)
 	} else {
-		s.timer.Reset(settleDelay)
+		s.timer.Reset(d)
 	}
 }
 
-// flush applies everything pending.
-func (s *settings) flush() {
-	s.mu.Lock()
-	isp, sound, smart, motion, osd, video := s.isp, s.sound, s.smart, s.motion, s.osd, s.video
-	s.isp, s.sound, s.smart, s.motion, s.osd, s.video = nil, nil, nil, nil, nil, nil
-	hdr := ""
-	if s.hdrDirty && s.hdrOn != nil {
-		hdr = hdrSwitch(*s.hdrOn, s.hdrMode)
-	}
-	s.hdrDirty = false
-	s.mu.Unlock()
-	if isp == nil && hdr == "" && sound == nil && smart == nil && motion == nil && osd == nil && video == nil {
+// close stops the timer and waits for a running flush, which is cancelled:
+// nothing of a stopped bridge writes to the doorbell.
+func (s *settings) close() {
+	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	s.closed = true
+	if s.timer != nil {
+		s.timer.Stop()
+	}
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.mu.Unlock()
+	//lint:ignore SA2001 taking the lock waits for a running flush to end
+	s.flushMu.Lock()
+	s.flushMu.Unlock()
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+// pendingSet is what one flush applies.
+type pendingSet struct {
+	isp    *unifi.ISP
+	hdr    bool // the HDR switch changed
+	sound  *unifi.SoundLed
+	smart  *unifi.SmartDetect
+	motion *unifi.Motion
+	osd    *unifi.OSD
+	video  map[string]unifi.Video
+}
+
+func (p pendingSet) empty() bool {
+	return p.isp == nil && !p.hdr && p.sound == nil && p.smart == nil && p.motion == nil && p.osd == nil && p.video == nil
+}
+
+// take empties the pending values. Must be called with s.mu held.
+func (s *settings) take() pendingSet {
+	p := pendingSet{isp: s.isp, hdr: s.hdrDirty && s.hdrOn != nil, sound: s.sound, smart: s.smart, motion: s.motion, osd: s.osd, video: s.video}
+	s.isp, s.sound, s.smart, s.motion, s.osd, s.video = nil, nil, nil, nil, nil, nil
+	s.hdrDirty = false
+	return p
+}
+
+// putBack returns values a flush could not apply; values that arrived
+// meanwhile are newer and win. Must be called with s.mu held.
+func (s *settings) putBack(p pendingSet) {
+	s.isp = merged(p.isp, s.isp)
+	s.sound = merged(p.sound, s.sound)
+	if s.smart == nil {
+		s.smart = p.smart
+	}
+	if s.motion == nil {
+		s.motion = p.motion
+	}
+	if s.osd == nil {
+		s.osd = p.osd
+	}
+	for ch, v := range p.video {
+		if s.video == nil {
+			s.video = map[string]unifi.Video{}
+		}
+		if _, ok := s.video[ch]; !ok {
+			s.video[ch] = v
+		}
+	}
+	if p.hdr {
+		s.hdrDirty = true
+	}
+}
+
+// flush applies everything pending. Flushes run one at a time.
+func (s *settings) flush() {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	p := s.take()
+	hdr := ""
+	if p.hdr {
+		hdr = hdrSwitch(*s.hdrOn, s.hdrMode)
+	}
+	s.mu.Unlock()
+	if p.empty() {
+		return
+	}
+	isp, sound, smart, motion, osd, video := p.isp, p.sound, p.smart, p.motion, p.osd, p.video
+
+	base := s.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, 60*time.Second)
 	defer cancel()
 
-	d := s.b.opts.Doorbell
-	client, err := s.b.dialControl(ctx)
+	dial := s.dial
+	if dial == nil {
+		dial = s.b.dialControl
+	}
+	client, err := dial(ctx)
 	if err != nil {
-		log.Warn().Err(err).Msg("[settings] can't reach the doorbell")
+		s.mu.Lock()
+		s.putBack(p)
+		s.retry = min(max(2*s.retry, 5*time.Second), settingsRetry)
+		retry := s.retry
+		s.arm(retry)
+		s.mu.Unlock()
+		if base.Err() == nil {
+			log.Warn().Err(err).Msgf("[settings] can't reach the doorbell, retrying in %s", retry)
+		}
 		return
 	}
 	defer client.Close()
-	ch := uint8(d.Channel)
+	s.mu.Lock()
+	s.retry = 0
+	s.mu.Unlock()
+	ch := uint8(s.b.opts.Doorbell.Channel)
 
 	if isp != nil || hdr != "" {
 		s.run(ctx, "image", func() error { return applyImage(ctx, client, ch, isp, hdr) })
@@ -591,14 +746,24 @@ func maskChange(masks []unifi.Mask) func(*baichuan.Node) bool {
 
 		want := map[int][4]int{}
 		for i, m := range masks {
+			r := boundingBox(m.Coord)
+			if fullFrame(r) {
+				// Protect's privacy mode adds a zone over the whole frame,
+				// with a new (highest) id: it alone hides everything.
+				want = map[int][4]int{0: r}
+				break
+			}
 			if i >= maxMasks {
 				log.Warn().Msgf("[settings] the doorbell takes %d privacy zones, zone %d ignored", maxMasks, m.ID)
 				continue
 			}
-			want[i] = boundingBox(m.Coord)
+			want[i] = r
 		}
 		have := map[int][4]int{}
 		for _, e := range list.Children {
+			if e.Value("enable") == "0" {
+				continue // deleted
+			}
 			id, _ := strconv.Atoi(e.Value("id"))
 			have[id] = [4]int{unpack(e.Value("topLeftX")), unpack(e.Value("topLeftY")), unpack(e.Value("width")), unpack(e.Value("height"))}
 		}
@@ -645,6 +810,12 @@ func unpack(s string) int {
 		return -1
 	}
 	return (v >> 16) * maskRef / ref
+}
+
+// fullFrame reports a box covering the whole picture (in 0-1000, allowing
+// for rounding).
+func fullFrame(r [4]int) bool {
+	return r[0] <= 1 && r[1] <= 1 && r[0]+r[2] >= 999 && r[1]+r[3] >= 999
 }
 
 func sameMasks(a, b map[int][4]int) bool {

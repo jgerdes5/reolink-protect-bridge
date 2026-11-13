@@ -96,8 +96,8 @@ func TestOnFeedback(t *testing.T) {
 	})
 	key := unifi.Feedback{Type: unifi.FeedbackKeyframe}
 
-	require.True(t, b.onFeedback("video3", true, key))
-	require.True(t, b.onFeedback("video1", false, key)) // transcoded: ffmpeg's keyframes
+	require.True(t, b.onFeedback("video3", true, key, nil))
+	require.True(t, b.onFeedback("video1", false, key, nil)) // transcoded: ffmpeg's keyframes
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -107,8 +107,18 @@ func TestOnFeedback(t *testing.T) {
 	require.Equal(t, []string{"subStream"}, got)
 	mu.Unlock()
 
-	require.False(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackInvalidPoint}))
-	require.True(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackEvent, Body: []byte{0, 3}}))
+	require.False(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackInvalidPoint}, nil))
+	require.True(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackEvent, Body: []byte{0, 3}}, nil))
+
+	// RTT probes go to the stream's answering goroutine, not the keyframer
+	var probes [][]byte
+	body := []byte("probe-0123456789")
+	require.True(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackRTT, Body: body}, func(b []byte) { probes = append(probes, b) }))
+	require.Equal(t, [][]byte{body}, probes)
+	require.True(t, b.onFeedback("video1", true, unifi.Feedback{Type: unifi.FeedbackRTT, Body: body}, nil))
+	mu.Lock()
+	require.Len(t, got, 1)
+	mu.Unlock()
 }
 
 type recordIframer struct {

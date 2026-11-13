@@ -29,7 +29,10 @@ import (
 	"github.com/rs/zerolog"
 )
 
-var log = zerolog.Nop()
+var (
+	log     = zerolog.Nop()
+	logOnce sync.Once
+)
 
 // Doorbell is how to reach the Reolink doorbell (Baichuan, TCP 9000).
 type Doorbell struct {
@@ -73,10 +76,14 @@ type Bridge struct {
 	proto *unifi.Camera
 
 	mu         sync.Mutex
-	info       [2]streamInfo     // main, sub
-	codecNotes map[string]string // channel -> last codec warning
-	runners    map[string]*runner
-	events     []Event // newest last, for the status page
+	info       [2]streamInfo      // main, sub
+	codecNotes map[string]string  // channel -> last codec warning
+	runners    map[string]*runner // last runner per channel, kept after stop so the next start waits for it
+	closed     bool               // Run is tearing down: no new runners
+	wg         sync.WaitGroup     // all runners and background loops; Run waits for them
+	talk       *talker
+	serveFn    func(ctx context.Context, channel, addr, streamName, codec string) // for tests; nil = serve
+	events     []Event                                                            // newest last, for the status page
 	eventsUp   bool
 	settings   *settings
 	tracker    *tracker
@@ -99,8 +106,9 @@ type streamInfo struct {
 }
 
 type runner struct {
-	cancel context.CancelFunc
-	done   chan struct{}
+	cancel  context.CancelFunc
+	done    chan struct{}
+	stopped bool // cancelled; still in runners until replaced
 }
 
 // Event is a line on the status page.
@@ -115,9 +123,15 @@ var channelNames = [3]string{"video1", "video2", "video3"}
 var channelBitrates = [3]int{6000000, 500000, 300000}
 
 // New prepares a bridge; Run starts it.
+//
+// The package loggers are set by the first New only: the web UI restarts
+// bridges in this process with the same logger, and goroutines of the old
+// bridge may still be reading them.
 func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
-	log = logger
-	reolink.Log = logger
+	logOnce.Do(func() {
+		log = logger
+		reolink.Log = logger
+	})
 	if opts.FFmpeg == "" {
 		opts.FFmpeg = "ffmpeg"
 	}
@@ -173,7 +187,7 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		Token:    tokens.get,
 		Channel:  b.channel,
 		Start:    b.start,
-		Stop:     func(channel string) { b.stop(channel) },
+		Stop:     b.stop,
 		Snapshot: b.Snapshot,
 		// with settings sync the doorbell takes Protect's frame rate
 		EchoVideo: opts.Settings,
@@ -186,12 +200,12 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		b.proto.RingAPI = func(ctx context.Context) error { return protect.Ring(ctx, mac) }
 	}
 	if opts.Talkback {
-		t := &talker{key: opts.Name, src: b.main, ffmpeg: opts.FFmpeg}
-		b.proto.Talk = t.feed
+		b.talk = &talker{key: opts.Name, src: b.main, ffmpeg: opts.FFmpeg}
+		b.proto.Talk = b.talk.feed
 	}
 	// Always receive Protect's settings: which smart detections are on filters
 	// the events; writing them to the doorbell is optional.
-	b.settings = &settings{b: b, apply: opts.Settings}
+	b.settings = newSettings(b, opts.Settings)
 	b.proto.Settings = b.settings
 	return b, nil
 }
@@ -227,8 +241,11 @@ func (b *Bridge) dialer(stream string) source.DialFunc {
 	}
 }
 
-// Run serves Protect until ctx ends.
+// Run serves Protect until ctx ends. It returns once every stream to
+// Protect has ended and nothing of this bridge writes to the doorbell any
+// more, so a new bridge with the same identity can start right after.
 func (b *Bridge) Run(ctx context.Context) {
+	defer b.teardown()
 	go b.main.Run(ctx)
 	go b.sub.Run(ctx)
 
@@ -238,15 +255,29 @@ func (b *Bridge) Run(ctx context.Context) {
 		return
 	}
 	if b.opts.Events {
-		go b.runEvents(ctx)
+		b.wg.Add(1)
+		go func() {
+			defer b.wg.Done()
+			b.runEvents(ctx)
+		}()
 	}
 	b.loadEncoder(ctx)
 	b.proto.Run(ctx)
+}
 
+// teardown stops all channels and waits for them, the event loop, pending
+// settings and talkback.
+func (b *Bridge) teardown() {
+	b.mu.Lock()
+	b.closed = true
+	b.mu.Unlock()
 	for _, name := range channelNames {
-		if r := b.stop(name); r != nil {
-			<-r.done
-		}
+		b.stop(name)
+	}
+	b.wg.Wait()
+	b.settings.close()
+	if b.talk != nil {
+		b.talk.close()
 	}
 	b.keys.close()
 }
@@ -370,57 +401,91 @@ func (b *Bridge) sourceFor(channel string) *source.Source {
 }
 
 func (b *Bridge) start(channel, addr, streamName, codec string) {
-	prev := b.stop(channel)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &runner{cancel: cancel, done: make(chan struct{})}
 
 	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		cancel()
+		return
+	}
+	prev := b.runners[channel] // running or stopped but maybe not yet ended
 	b.runners[channel] = r
+	b.wg.Add(1)
 	b.mu.Unlock()
+	if prev != nil {
+		prev.cancel()
+	}
 
 	go func() {
+		defer b.wg.Done()
 		defer close(r.done)
 		if prev != nil {
 			<-prev.done // never two streams for one channel
 		}
-		b.serve(ctx, channel, addr, streamName, codec)
+		serve := b.serveFn
+		if serve == nil {
+			serve = b.serve
+		}
+		serve(ctx, channel, addr, streamName, codec)
 	}()
 }
 
 // stop cancels a channel without waiting: it is called from the protocol loop,
-// which must keep answering Protect.
-func (b *Bridge) stop(channel string) *runner {
+// which must keep answering Protect. The runner stays in b.runners, so a
+// following start waits until it has really ended.
+func (b *Bridge) stop(channel string) {
 	b.mu.Lock()
 	r := b.runners[channel]
-	delete(b.runners, channel)
+	if r != nil {
+		r.stopped = true
+	}
 	b.mu.Unlock()
 	if r != nil {
 		r.cancel()
 	}
-	return r
 }
 
 // serve keeps one channel streaming to Protect until stopped, re-dialling a
 // lost connection to the same destination.
+//
+// Errors that won't go away by themselves (no video, ffmpeg can't transcode)
+// back off up to a minute, and the same error is logged at Error level once.
 func (b *Bridge) serve(ctx context.Context, channel, addr, streamName, codec string) {
+	var lastErr string
+	delay := retryMin
 	for {
 		err := b.streamOnce(ctx, channel, addr, streamName, codec)
 		if ctx.Err() != nil {
 			return
 		}
 		if errors.Is(err, errNoVideo) || errors.Is(err, errTranscode) {
-			log.Error().Err(err).Msgf("[bridge] %s", channel)
+			if msg := err.Error(); msg != lastErr {
+				lastErr = msg
+				log.Error().Err(err).Msgf("[bridge] %s", channel)
+			} else {
+				log.Debug().Err(err).Msgf("[bridge] %s, retrying in %s", channel, delay)
+			}
 		} else {
+			lastErr, delay = "", retryMin
 			log.Debug().Err(err).Msgf("[bridge] %s ended, retrying", channel)
 		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(3 * time.Second):
+		case <-time.After(delay):
+		}
+		if lastErr != "" {
+			delay = min(delay*2, retryMax)
 		}
 	}
 }
+
+const (
+	retryMin = 3 * time.Second
+	retryMax = time.Minute
+)
 
 func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, codec string) error {
 	i := channelIndex(channel)
@@ -460,14 +525,23 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 
 	// Protect sends small messages back on this socket (keyframe requests
 	// among them); reading them also keeps the TCP window open and notices
-	// Protect closing the connection.
+	// Protect closing the connection. RTT probes are answered on a goroutine
+	// of their own: the answer is a write that may block behind video.
+	rtt := make(chan []byte, 1)
 	go func() {
+		for body := range rtt {
+			cons.RTT(body)
+		}
+	}()
+	go func() {
+		defer close(rtt)
 		_ = unifi.ReadFeedback(conn, func(f unifi.Feedback) {
-			if f.Type == unifi.FeedbackRTT {
-				cons.RTT(f.Body)
-				return
-			}
-			if !b.onFeedback(channel, passthrough, f) {
+			if !b.onFeedback(channel, passthrough, f, func(body []byte) {
+				select {
+				case rtt <- body:
+				default: // one is still being answered: skip this probe
+				}
+			}) {
 				_ = conn.Close()
 			}
 		})
@@ -545,45 +619,28 @@ func (b *Bridge) attach(ctx context.Context, channel string, src *source.Source,
 }
 
 // transcode returns the running transcoder for a source and codec, starting
-// one if needed, and a release function; the last release stops it.
+// one if needed, and a release function; the last release stops it. ffmpeg
+// starts outside b.tmu, bounded by ctx: a stalled source must not block the
+// other channels. Callers arriving while it starts wait for that start.
 func (b *Bridge) transcode(ctx context.Context, src *source.Source, codec string, fps int) (*transcoder, func(), error) {
-	b.tmu.Lock()
-	defer b.tmu.Unlock()
 	key := src.Name + "|" + codec
+	b.tmu.Lock()
 	st := b.transcodes[key]
-	if st != nil {
-		select {
-		case <-st.tr.done: // ffmpeg died: start a new one
-			st = nil
-		default:
-		}
+	if st != nil && st.dead() { // ffmpeg died or never started: start a new one
+		delete(b.transcodes, key)
+		st = nil
 	}
-	if st == nil {
-		tr := newTranscoder(codec, fps)
-		if err := src.AddConsumer(ctx, tr); err != nil {
-			return nil, nil, err
-		}
-		stop := func() {
-			src.RemoveConsumer(tr)
-			_ = tr.Stop()
-		}
-		if !tr.hasVideo() {
-			stop()
-			return nil, nil, errNoVideo
-		}
-		runCtx, cancel := context.WithCancel(context.Background())
-		if err := tr.run(runCtx, b.opts.FFmpeg); err != nil {
-			cancel()
-			stop()
-			return nil, nil, err
-		}
-		st = &sharedTranscode{tr: tr, stop: func() { cancel(); stop() }}
+	starter := st == nil
+	if starter {
+		st = &sharedTranscode{ready: make(chan struct{})}
 		if b.transcodes == nil {
 			b.transcodes = map[string]*sharedTranscode{}
 		}
 		b.transcodes[key] = st
 	}
 	st.users++
+	b.tmu.Unlock()
+
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
@@ -592,19 +649,87 @@ func (b *Bridge) transcode(ctx context.Context, src *source.Source, codec string
 			if st.users--; st.users > 0 {
 				return
 			}
-			st.stop()
+			if st.stop != nil {
+				st.stop()
+			}
 			if b.transcodes[key] == st {
 				delete(b.transcodes, key)
 			}
 		})
 	}
+
+	if starter {
+		tr, stop, err := startTranscode(ctx, src, codec, fps, b.opts.FFmpeg)
+		b.tmu.Lock()
+		st.tr, st.stop, st.err = tr, stop, err
+		close(st.ready)
+		b.tmu.Unlock()
+	} else {
+		select {
+		case <-st.ready:
+		case <-ctx.Done():
+			release()
+			return nil, nil, ctx.Err()
+		}
+	}
+	if st.err != nil {
+		release()
+		return nil, nil, st.err
+	}
 	return st.tr, release, nil
 }
 
+// startTranscode attaches a new transcoder to src and starts its ffmpeg; stop
+// ends both.
+func startTranscode(ctx context.Context, src *source.Source, codec string, fps int, ffmpeg string) (*transcoder, func(), error) {
+	tr := newTranscoder(codec, fps)
+	if err := src.AddConsumer(ctx, tr); err != nil {
+		return nil, nil, err
+	}
+	detach := func() {
+		src.RemoveConsumer(tr)
+		_ = tr.Stop()
+	}
+	if !tr.hasVideo() {
+		detach()
+		return nil, nil, errNoVideo
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	if err := tr.run(ctx, runCtx, ffmpeg); err != nil {
+		cancel()
+		detach()
+		return nil, nil, err
+	}
+	return tr, func() { cancel(); detach() }, nil
+}
+
+// sharedTranscode is one transcoder and its users. tr, stop and err are set
+// once ready is closed (under b.tmu).
 type sharedTranscode struct {
+	ready chan struct{}
 	tr    *transcoder
 	stop  func()
+	err   error
 	users int
+}
+
+// dead reports a start that failed or an ffmpeg that has exited. Must be
+// called with b.tmu held.
+func (st *sharedTranscode) dead() bool {
+	select {
+	case <-st.ready:
+	default:
+		return false // still starting
+	}
+	if st.err != nil {
+		return true
+	}
+	select {
+	case <-st.tr.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // noteCodec logs a codec note once per channel and message.
@@ -648,7 +773,9 @@ func (b *Bridge) Snapshot(ctx context.Context) ([]byte, error) {
 		return b.snap, b.snapErr
 	}
 	jpeg, err := b.captureSnapshot(ctx)
-	b.snap, b.snapErr, b.snapTime = jpeg, err, time.Now()
+	if ctx.Err() == nil { // a caller giving up says nothing about the next one
+		b.snap, b.snapErr, b.snapTime = jpeg, err, time.Now()
+	}
 	return jpeg, err
 }
 
@@ -748,16 +875,25 @@ func (b *Bridge) Status() Status {
 		}
 	}
 	st.Protect = b.proto.Status()
+	st.Channels = b.streaming()
 	b.mu.Lock()
-	for _, name := range channelNames {
-		if b.runners[name] != nil {
-			st.Channels = append(st.Channels, name)
-		}
-	}
 	st.Recent = append([]Event(nil), b.events...)
 	st.Doorbell.Events = b.eventsUp
 	b.mu.Unlock()
 	return st
+}
+
+// streaming lists the channels Protect has asked for and not stopped.
+func (b *Bridge) streaming() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []string
+	for _, name := range channelNames {
+		if r := b.runners[name]; r != nil && !r.stopped {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // NormalizeMAC returns 12 upper-case hex digits.

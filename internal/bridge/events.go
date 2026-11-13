@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/baichuan"
+	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 )
 
 // Events come from the Reolink doorbell itself over Baichuan push (port 9000),
@@ -36,6 +37,10 @@ type alarmState struct {
 	smart   string
 	visitor bool
 	last    time.Time
+
+	// enabled filters the AI types before one is chosen: a type switched
+	// off in Protect must not hold the event and hide a later person.
+	enabled func(object string) bool // nil = all
 }
 
 func (s *alarmState) apply(ctx context.Context, ev baichuan.AlarmEvent, sink eventSink) {
@@ -48,8 +53,11 @@ func (s *alarmState) apply(ctx context.Context, ev baichuan.AlarmEvent, sink eve
 
 	smart := ""
 	for _, o := range aiObjects {
+		if smart != "" || (s.enabled != nil && !s.enabled(o.protect)) {
+			continue
+		}
 		for _, t := range ev.AI {
-			if t == o.reolink && smart == "" {
+			if t == o.reolink {
 				smart = o.protect
 			}
 		}
@@ -81,7 +89,7 @@ func (s *alarmState) clear(sink eventSink) {
 func (b *Bridge) runEvents(ctx context.Context) {
 	d := b.opts.Doorbell
 	cfg := baichuan.Config{Host: d.Host, Port: d.Port, Username: d.Username, Password: d.Password}
-	sink := &recordingSink{eventSink: b.proto, b: b}
+	sink := &recordingSink{eventSink: b.proto, b: b, detect: b.proto.Detections}
 
 	backoff := 2 * time.Second
 	for ctx.Err() == nil {
@@ -119,7 +127,7 @@ func (b *Bridge) eventsOnce(ctx context.Context, cfg baichuan.Config, channel in
 	b.setEventsUp(true)
 	defer b.setEventsUp(false)
 
-	var state alarmState
+	state := alarmState{enabled: b.settings.smartEnabled}
 	defer state.clear(sink)
 
 	tick := time.NewTicker(15 * time.Second)
@@ -156,7 +164,8 @@ func (b *Bridge) setEventsUp(up bool) {
 // recordingSink passes events to Protect and notes them for the status page.
 type recordingSink struct {
 	eventSink
-	b *Bridge
+	b      *Bridge
+	detect func(unifi.Detection) // Camera.Detections; nil in tests
 }
 
 func (r *recordingSink) Motion(on bool) {
@@ -173,7 +182,11 @@ func (r *recordingSink) SmartDetect(object string) {
 		}
 		r.b.addEvent(object)
 	}
-	r.b.tracker.setObject(object)
+	// zones still occupied when the object is gone are left: report that
+	// while the event is still open
+	if last := r.b.tracker.setObject(object); r.detect != nil && len(last.Boxes) > 0 {
+		r.detect(last)
+	}
 	r.eventSink.SmartDetect(object)
 }
 

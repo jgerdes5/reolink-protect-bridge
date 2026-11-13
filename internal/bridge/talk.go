@@ -28,18 +28,28 @@ type talker struct {
 	src    *source.Source // the stream with the doorbell's talk channel (main)
 	ffmpeg string
 
-	mu sync.Mutex
-	ch chan []byte // frames for the running session, nil when idle
+	mu     sync.Mutex
+	ch     chan []byte   // frames for the running session, nil when idle
+	quit   chan struct{} // closed by close
+	closed bool
+	wg     sync.WaitGroup // the running session
 }
 
 func (t *talker) feed(adts []byte) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
 	if t.ch == nil {
+		if t.quit == nil {
+			t.quit = make(chan struct{})
+		}
 		// ~2 s of audio while the session opens: the burst after opening must
 		// fit a go2rtc sender's 128-packet buffer
 		t.ch = make(chan []byte, 48)
-		go t.run(t.ch)
+		t.wg.Add(1)
+		go t.run(t.ch, t.quit)
 	}
 	select {
 	case t.ch <- adts:
@@ -51,12 +61,13 @@ func (t *talker) feed(adts []byte) {
 // session is fully closed, so audio arriving meanwhile reopens one here
 // instead of racing a second session against the closing one on the same
 // backchannel.
-func (t *talker) run(ch chan []byte) {
+func (t *talker) run(ch chan []byte, quit chan struct{}) {
+	defer t.wg.Done()
 	for {
-		t.session(ch)
+		t.session(ch, quit)
 
 		t.mu.Lock()
-		if len(ch) == 0 {
+		if len(ch) == 0 || t.closed {
 			t.ch = nil
 			t.mu.Unlock()
 			return
@@ -68,7 +79,7 @@ func (t *talker) run(ch chan []byte) {
 // session opens a talk session and feeds it until no audio arrived for
 // talkIdle. If the session can't open or ffmpeg dies, audio is dropped until
 // the pause, so a broken source is not retried for every frame.
-func (t *talker) session(ch chan []byte) {
+func (t *talker) session(ch chan []byte, quit chan struct{}) {
 	sess, err := openTalk(t.src, t.ffmpeg)
 	if err != nil {
 		log.Warn().Err(err).Msgf("[talkback] %s:", t.key)
@@ -98,8 +109,24 @@ func (t *talker) session(ch chan []byte) {
 			timer.Reset(talkIdle)
 		case <-timer.C:
 			return
+		case <-quit:
+			return
 		}
 	}
+}
+
+// close ends a running session and waits for it: the talk channel of a
+// stopped bridge is released.
+func (t *talker) close() {
+	t.mu.Lock()
+	if !t.closed {
+		t.closed = true
+		if t.quit != nil {
+			close(t.quit)
+		}
+	}
+	t.mu.Unlock()
+	t.wg.Wait()
 }
 
 // talkCodecs are offered in two rounds: producers pick their own first match,
@@ -150,6 +177,7 @@ type talkSession struct {
 	cons   *talkConsumer
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
+	read   chan struct{} // closed when ffmpeg's output is read to the end
 	format string
 }
 
@@ -198,7 +226,9 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 	}
 
 	// 20 ms packets, timestamps in samples
+	read := make(chan struct{})
 	go func() {
+		defer close(read)
 		chunk := rate / 50 * sampleBytes
 		buf := make([]byte, chunk)
 		var seq uint16
@@ -216,23 +246,21 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 		}
 	}()
 
-	return &talkSession{src: src, cons: cons, cmd: cmd, stdin: stdin,
+	return &talkSession{src: src, cons: cons, cmd: cmd, stdin: stdin, read: read,
 		format: recv.Codec.Name + "/" + strconv.Itoa(rate)}, nil
 }
 
+// close lets ffmpeg flush the last audio: stdin closed, output read to the
+// end (cmd.Wait closes stdout, so it must come after the reader), then Wait.
 func (s *talkSession) close() {
 	_ = s.stdin.Close()
-	done := make(chan struct{})
-	go func() {
-		_ = s.cmd.Wait()
-		close(done)
-	}()
 	select {
-	case <-done:
+	case <-s.read:
 	case <-time.After(2 * time.Second):
 		_ = s.cmd.Process.Kill()
-		<-done
+		<-s.read
 	}
+	_ = s.cmd.Wait()
 	s.src.RemoveConsumer(s.cons)
 	_ = s.cons.Stop()
 }
