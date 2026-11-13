@@ -40,7 +40,7 @@ func connectedCamera(t *testing.T, cam *Camera) (*fakeProtect, *websocket.Conn) 
 	cam.Cert, err = LoadCert(pemText)
 	require.NoError(t, err)
 	cam.Host, cam.Port = host, port
-	cam.Name, cam.MAC, cam.IP = "Klingel", "02A1B2C3D4E5", "127.0.0.1"
+	cam.Name, cam.MAC, cam.IP = "Doorbell", "02A1B2C3D4E5", "127.0.0.1"
 	cam.Doorbell, cam.Identity = true, G4Doorbell
 	cam.Token = func(context.Context, bool) (string, error) { return "good", nil }
 	cam.Channel = func(string) Channel { return Channel{Width: 640, Height: 480, FPS: 15} }
@@ -305,9 +305,9 @@ func TestSmartDetectRealBoxes(t *testing.T) {
 	require.Equal(t, 1.0, line["person"].(map[string]any)["crosslineA2B"])
 	require.Equal(t, []any{5.0}, moving["descriptors"].([]any)[0].(map[string]any)["lines"])
 
-	// the crop follows the real box
+	// the crop's coord is the real box it was cut from, at the event's start
 	cam.SmartDetect("")
 	_, leave := readMsg(t, conn)
 	shot := leave["smartDetectSnapshots"].([]any)[0].(map[string]any)
-	require.Equal(t, []any{650.0, 200.0, 100.0, 400.0}, shot["coord"])
+	require.Equal(t, []any{600.0, 200.0, 100.0, 400.0}, shot["coord"])
 }

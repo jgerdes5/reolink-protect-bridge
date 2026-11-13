@@ -134,7 +134,7 @@ func TestCameraSession(t *testing.T) {
 
 	calls := &callLog{}
 	cam := &Camera{
-		Host: host, Port: port, Name: "Klingel", MAC: "02A1B2C3D4E5", IP: "192.168.1.236",
+		Host: host, Port: port, Name: "Doorbell", MAC: "02A1B2C3D4E5", IP: "192.0.2.36",
 		Doorbell: true, HasAudio: true, Identity: G4Doorbell, Cert: cert,
 		// like tokenSource: a cached token that turns out expired (403) is
 		// replaced by a fresh one, which is then reused
@@ -179,7 +179,7 @@ func TestCameraSession(t *testing.T) {
 	require.Equal(t, "02A1B2C3D4E5", h.Get("camera-mac"))
 	require.Equal(t, "0xa571", h.Get("camera-model"))
 	require.Equal(t, "5.5.45", h.Get("camera-firmware"))
-	require.Equal(t, "192.168.1.236", h.Get("camera-ip"))
+	require.Equal(t, "192.0.2.36", h.Get("camera-ip"))
 	require.NotEmpty(t, h.Get("device-id"))
 	require.Equal(t, "http://ws_camera_proto_secure_transfer", h.Get("Origin"))
 

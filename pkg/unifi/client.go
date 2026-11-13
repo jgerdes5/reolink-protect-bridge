@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -64,7 +65,11 @@ type Camera struct {
 
 	Log zerolog.Logger
 
-	started time.Time
+	startOnce sync.Once
+	quitInit  sync.Once
+	quitOnce  sync.Once
+	quit      chan struct{} // closed when Run returns: ends the event and settings workers
+	started   time.Time     // set once, first use: uptime() runs on event goroutines too
 
 	mu          sync.Mutex
 	conn        *websocket.Conn
@@ -112,6 +117,7 @@ func (c *Camera) Status() Status {
 const (
 	pingInterval = 20 * time.Second // the Python websockets default the proxy runs with
 	readTimeout  = 60 * time.Second
+	maxMessage   = 4 << 20 // Protect's messages are a few KiB of JSON
 )
 
 // Run connects and serves Protect until ctx is cancelled, reconnecting with
@@ -119,6 +125,7 @@ const (
 func (c *Camera) Run(ctx context.Context) {
 	c.init()
 	defer c.closeTalkback()
+	defer c.quitOnce.Do(func() { close(c.stopped()) })
 
 	backoff := 2 * time.Second
 	fresh := false
@@ -217,6 +224,7 @@ func (c *Camera) session(ctx context.Context, freshToken bool) (connected bool, 
 		return false, err
 	}
 	defer conn.Close()
+	conn.SetReadLimit(maxMessage)
 
 	c.mu.Lock()
 	c.conn = conn
@@ -440,7 +448,11 @@ func (c *Camera) handle(ctx context.Context, msg *Message) error {
 
 	case "GetRequest":
 		// Uploads take seconds; never hold up the other requests behind one.
-		go c.answerSnapshot(ctx, msg)
+		// The reply belongs to this session, not to a later one.
+		c.mu.Lock()
+		session := c.conn
+		c.mu.Unlock()
+		go c.answerSnapshot(ctx, session, msg)
 		return nil
 
 	case "UpdateFirmwareRequest":
@@ -586,11 +598,7 @@ func (c *Camera) pretendUpgrade(payload json.RawMessage) {
 
 // answerSnapshot uploads a JPEG to the URI Protect gives in a GetRequest, as a
 // multipart form with the image in field "payload" plus Protect's formFields.
-func (c *Camera) answerSnapshot(ctx context.Context, msg *Message) {
-	c.mu.Lock()
-	session := c.conn
-	c.mu.Unlock()
-
+func (c *Camera) answerSnapshot(ctx context.Context, session *websocket.Conn, msg *Message) {
 	var p struct {
 		What       string            `json:"what"`
 		URI        string            `json:"uri"`
@@ -607,7 +615,7 @@ func (c *Camera) answerSnapshot(ctx context.Context, msg *Message) {
 		}
 	}
 
-	if msg.ResponseExpected {
+	if msg.ResponseExpected && session != nil {
 		_ = c.sendMessage(session, "GetRequest", msg.MessageID, nil, "")
 	}
 }
@@ -653,6 +661,7 @@ func (c *Camera) uploadSnapshot(ctx context.Context, uri string, fields map[stri
 	if err != nil {
 		return err
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // keeps the connection reusable
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("upload: HTTP %d", resp.StatusCode)
@@ -701,9 +710,7 @@ func (c *Camera) port() int {
 func (c *Camera) init() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.started.IsZero() {
-		c.started = time.Now()
-	}
+	c.uptime() // the clock starts with the first Run or message
 	if c.streamNames == nil {
 		c.streamNames = map[string]string{}
 		c.streaming = map[string]string{}
@@ -744,7 +751,33 @@ func (c *Camera) channel(name string) Channel {
 	return ch
 }
 
+// stopped is closed once Run has returned.
+func (c *Camera) stopped() chan struct{} {
+	c.quitInit.Do(func() { c.quit = make(chan struct{}) })
+	return c.quit
+}
+
+// worker runs queued jobs in order until Run returns; jobs still queued then
+// are dropped, so nothing reaches the doorbell or Protect after a restart.
+func (c *Camera) worker(q chan func()) {
+	quit := c.stopped()
+	for {
+		select {
+		case <-quit:
+			return
+		case job := <-q:
+			select {
+			case <-quit:
+				return
+			default:
+			}
+			job()
+		}
+	}
+}
+
 func (c *Camera) uptime() time.Duration {
+	c.startOnce.Do(func() { c.started = time.Now() })
 	return time.Since(c.started)
 }
 

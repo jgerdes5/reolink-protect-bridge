@@ -46,7 +46,27 @@ func fileHeader(audio bool) []byte {
 // stream timeline, which starts at 0 with the first keyframe. It is not safe
 // for concurrent use; the Consumer serialises calls.
 type muxer struct {
-	start time.Time // wall-clock time of the first keyframe
+	start time.Time     // wall-clock time of the first keyframe
+	stamp time.Time     // wall-clock time of the tags being built now
+	last  time.Duration // latest position written, so tags never go back
+	sent  [64]sentTag   // recent trailers, to answer RTT probes
+	next  int
+}
+
+// sentTag is a trailer as written and when: Protect's RTT probe echoes one.
+type sentTag struct {
+	clock, ticks int64
+	at           time.Time
+}
+
+// sentAt is when the trailer with these ticks of clock was written.
+func (m *muxer) sentAt(clock, t int64) (time.Time, bool) {
+	for _, s := range m.sent {
+		if s.clock == clock && s.ticks == t && !s.at.IsZero() {
+			return s.at, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func newMuxer(now time.Time) *muxer {
@@ -88,7 +108,15 @@ func (m *muxer) appendTag(b []byte, tagType byte, at time.Duration, parts ...[]b
 		b = append(b, p...)
 	}
 	b = binary.BigEndian.AppendUint32(b, uint32(11+size))
-	return appendTrailer(b, tagType == tagVideo, at)
+	video := tagType == tagVideo
+	clock := int64(clockOther)
+	if video {
+		clock = clockVideo
+	}
+	m.sent[m.next] = sentTag{clock: clock, ticks: max(ticks(at, clock), 0), at: m.stamp}
+	m.next = (m.next + 1) % len(m.sent)
+	m.last = max(m.last, at)
+	return appendTrailer(b, video, at)
 }
 
 // appendSync appends onMpma and onClockSync, which a real camera sends right

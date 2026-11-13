@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -44,7 +45,7 @@ func (p *ProtectClient) login(ctx context.Context) error {
 		}
 	}
 	jar, _ := cookiejar.New(nil)
-	p.client = &http.Client{Jar: jar, Timeout: 15 * time.Second, Transport: p.transport}
+	client := &http.Client{Jar: jar, Timeout: 15 * time.Second, Transport: p.transport}
 
 	body, _ := json.Marshal(map[string]any{
 		"username": p.Username, "password": p.Password, "rememberMe": false,
@@ -56,15 +57,18 @@ func (p *ProtectClient) login(ctx context.Context) error {
 	req.Header.Set("Content-Type", "application/json")
 	p.setOrigin(req)
 
-	resp, err := p.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("protect login: HTTP %d", resp.StatusCode)
 	}
 
+	// keep the session only once it is known to work
+	p.client = client
 	p.csrf = resp.Header.Get("X-CSRF-Token")
 	if p.csrf == "" {
 		p.csrf = resp.Header.Get("X-Updated-CSRF-Token")
@@ -131,15 +135,17 @@ func (p *ProtectClient) Ring(ctx context.Context, mac string) error {
 	// Reuse the session (UniFi OS rate-limits logins); log in again when it is
 	// old or refused.
 	for attempt := 0; ; attempt++ {
+		fresh := false
 		if p.client == nil || time.Since(p.loggedIn) > sessionMaxAge || attempt > 0 {
 			if err := p.login(ctx); err != nil {
 				return err
 			}
+			fresh = true
 		}
 		err := p.ring(ctx, mac)
 		var status *statusError
-		if attempt == 0 && errors.As(err, &status) && (status.code == 401 || status.code == 403) {
-			continue
+		if !fresh && errors.As(err, &status) && (status.code == 401 || status.code == 403) {
+			continue // the reused session expired: one fresh login
 		}
 		return err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -52,6 +53,7 @@ type eventShot struct {
 	snapH int
 	crop  []byte
 	side  int
+	box   []int // the box crop was cut from
 }
 
 type events struct {
@@ -80,11 +82,7 @@ const eventQueue = 64
 func (c *Camera) enqueue(job func()) {
 	c.ev.queueOnce.Do(func() {
 		c.ev.queue = make(chan func(), eventQueue)
-		go func() {
-			for job := range c.ev.queue {
-				job()
-			}
-		}()
+		go c.worker(c.ev.queue)
 	})
 	select {
 	case c.ev.queue <- job:
@@ -225,20 +223,20 @@ func (c *Camera) ring(ctx context.Context) error {
 func (c *Camera) newEvent(object string, box []int) *event {
 	if !c.ev.seeded {
 		// not 0 after every restart, which could collide with ids Protect still
-		// holds; below 10^7 so trackerID stays far inside 32 bits
+		// holds; below 2*10^7 so trackerID ((id+1)*100) stays inside int32
 		c.ev.seeded = true
 		c.ev.nextID = uint32(time.Now().Unix()%1_000_000) * 10
 	}
-	if c.ev.nextID >= 40_000_000 {
+	if c.ev.nextID >= 20_000_000 {
 		c.ev.nextID = 0
 	}
 	e := &event{id: c.ev.nextID, start: time.Now(), object: object, done: make(chan struct{}), box: box}
 	c.ev.nextID++
-	go c.captureEvent(e)
+	go c.captureEvent(e, slices.Clone(box)) // Detections moves e.box meanwhile
 	return e
 }
 
-func (c *Camera) captureEvent(e *event) {
+func (c *Camera) captureEvent(e *event, box []int) {
 	defer close(e.done)
 	if c.Snapshot == nil {
 		return
@@ -255,7 +253,8 @@ func (c *Camera) captureEvent(e *event) {
 		shot.snapW, shot.snapH = cfg.Width, cfg.Height
 	}
 	if e.object != "" {
-		shot.crop, shot.side = squareCrop(snap, e.box)
+		shot.crop, shot.side = squareCrop(snap, box)
+		shot.box = box
 	}
 	e.shot = shot // published by close(e.done)
 
@@ -315,8 +314,8 @@ func (c *Camera) finishEvent(e *event, fn string) {
 			"clockBestMonotonic":        c.uptime().Milliseconds(),
 			"clockBestWall":             e.start.UnixMilli(),
 			"confidenceLevel":           90,
-			"coord":                     e.box,
-			"framingRect":               e.box,
+			"coord":                     shot.box,
+			"framingRect":               shot.box,
 			"reVerifyEligible":          false,
 			"smartDetectSnapshot":       name,
 			"smartDetectSnapshotHeight": shot.side,

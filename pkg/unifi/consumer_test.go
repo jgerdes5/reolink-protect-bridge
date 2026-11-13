@@ -460,10 +460,14 @@ func TestConsumerRTT(t *testing.T) {
 		defer c.mu.Unlock()
 		return c.wr != nil
 	}, time.Second, time.Millisecond)
+	c.RTT(make([]byte, 16)) // writer set, no keyframe yet: nothing
+	require.Empty(t, out.Bytes())
 	c.handleVideo(&rtp.Packet{Payload: avcc(sps, []byte{0x68, 0xce, 0x38, 0x80}, []byte{0x65, 0x88})})
+	now = start.Add(2 * time.Second)
+	c.handleVideo(&rtp.Packet{Header: rtp.Header{Timestamp: 2 * 90000}, Payload: avcc([]byte{0x41, 0x9a})})
 	before := len(out.Bytes())
 
-	// Protect echoes our trailer from 2 s into the stream; 2.25 s have passed
+	// Protect echoes the trailer of the frame sent at 2 s; 2.25 s have passed
 	now = start.Add(2250 * time.Millisecond)
 	probe := []byte{'a', 'b', 'c', 'd', 0, 0, 0, 0} // id, then the rate
 	binary.BigEndian.PutUint32(probe[4:], 90000)
@@ -473,6 +477,7 @@ func TestConsumerRTT(t *testing.T) {
 	tags := parseUniFi(t, out.Bytes()[before:])
 	require.Len(t, tags, 1)
 	require.Len(t, tags[0].payload, 62)
+	require.Equal(t, uint32(2000), tags[0].ts) // not behind the last tag
 	items, err := amf.NewReader(tags[0].payload).ReadItems()
 	require.NoError(t, err)
 	require.Equal(t, "onRtt", items[0])
@@ -481,10 +486,15 @@ func TestConsumerRTT(t *testing.T) {
 	require.Equal(t, float64(250), m["rttMillis"])
 	require.Equal(t, float64(0), m["encDelay"])
 
-	// an echoed time ahead of our clock: -1
-	binary.BigEndian.PutUint64(probe[8:], 10*90000)
-	c.RTT(probe)
+	// a trailer we never sent, or a garbage time: -1
+	for _, v := range []uint64{10 * 90000, 1 << 63} {
+		binary.BigEndian.PutUint64(probe[8:], v)
+		c.RTT(probe)
+	}
 	tags = parseUniFi(t, out.Bytes()[before:])
-	items, _ = amf.NewReader(tags[1].payload).ReadItems()
-	require.Equal(t, float64(-1), items[1].(map[string]any)["rttMillis"])
+	require.Len(t, tags, 3)
+	for _, tag := range tags[1:] {
+		items, _ = amf.NewReader(tag.payload).ReadItems()
+		require.Equal(t, float64(-1), items[1].(map[string]any)["rttMillis"])
+	}
 }

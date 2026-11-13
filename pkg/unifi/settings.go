@@ -258,11 +258,7 @@ func (c *Camera) applySetting(fn string, payload json.RawMessage) {
 
 	c.settingsOnce.Do(func() {
 		c.settingsQueue = make(chan func(), 64)
-		go func() {
-			for job := range c.settingsQueue {
-				job()
-			}
-		}()
+		go c.worker(c.settingsQueue)
 	})
 	select {
 	case c.settingsQueue <- job:

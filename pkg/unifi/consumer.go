@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,28 +25,29 @@ type Consumer struct {
 
 	opts StreamOptions
 
-	mu      sync.Mutex
-	wr      io.Writer
-	mux     *muxer
-	video   *core.Codec
-	hevc    bool // video is H.265
-	audio   *core.Codec
-	started bool // first keyframe sent
-	vclock  trackClock
-	aclock  trackClock
-	vpos    time.Duration // timeline position of the last video frame
-	spsIn   []byte        // last SPS seen and its rewritten form (fixSPS)
-	spsOut  []byte
-	buf     []byte // reused output buffer
-	frames  int    // video frames received, also before streaming
-	width   int    // from the SPS, once known
-	height  int
-	closed  bool
-	err     error
-	done    chan struct{}
-	closer  atomic.Value // io.Closer of the writer, closed by Stop without c.mu
-	onStop  []func()
-	stopped sync.Once
+	mu        sync.Mutex
+	wr        io.Writer
+	mux       *muxer
+	video     *core.Codec
+	hevc      bool // video is H.265
+	audio     *core.Codec
+	started   bool // first keyframe sent
+	vclock    trackClock
+	aclock    trackClock
+	vpos      time.Duration // timeline position of the last video frame
+	spsIn     []byte        // last SPS seen and its rewritten form (fixSPS)
+	spsOut    []byte
+	buf       []byte // reused output buffer
+	frames    int    // video frames received, also before streaming
+	width     int    // from the SPS, once known
+	height    int
+	closed    bool
+	err       error
+	done      chan struct{}
+	closer    atomic.Value // io.Closer of the writer, closed by Stop without c.mu
+	onStop    []func()
+	onStopRan bool // OnStop callbacks have run
+	stopped   sync.Once
 
 	now func() time.Time // for tests
 }
@@ -192,8 +194,13 @@ func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
 // its source).
 func (c *Consumer) OnStop(fn func()) {
 	c.mu.Lock()
-	c.onStop = append(c.onStop, fn)
+	if !c.onStopRan {
+		c.onStop = append(c.onStop, fn)
+		c.mu.Unlock()
+		return
+	}
 	c.mu.Unlock()
+	fn() // already stopped: release right away
 }
 
 // Stop ends WriteTo. The writer is closed first: a write blocked on a stalled
@@ -204,10 +211,13 @@ func (c *Consumer) Stop() error {
 	}
 	c.mu.Lock()
 	c.finish(nil)
-	onStop := c.onStop
 	c.mu.Unlock()
 	err := c.Connection.Stop()
 	c.stopped.Do(func() {
+		c.mu.Lock()
+		onStop := c.onStop
+		c.onStop, c.onStopRan = nil, true
+		c.mu.Unlock()
 		for _, fn := range onStop {
 			fn()
 		}
@@ -260,6 +270,7 @@ func (c *Consumer) handleVideo(pkt *rtp.Packet) {
 	}
 
 	at := c.vclock.next(pkt.Timestamp, now.Sub(c.mux.start))
+	c.mux.stamp = now
 	c.vpos = at
 
 	payload := pkt.Payload
@@ -293,6 +304,7 @@ func (c *Consumer) handleAudio(pkt *rtp.Packet) {
 		c.aclock = trackClock{rate: int64(clockRate(c.audio, 16000))}
 	}
 	at := c.aclock.next(pkt.Timestamp, now.Sub(c.mux.start))
+	c.mux.stamp = now
 
 	hdr := [2]byte{aacFlags, 1} // raw AAC frame
 	c.write(c.mux.appendTag(c.buf[:0], tagAudio, at, hdr[:], pkt.Payload))
@@ -624,28 +636,35 @@ func hevcParameterSets(avcc []byte) (vps, sps, pps []byte) {
 // RTT answers Protect's round-trip probe (feedback type 4) the way a UniFi
 // camera does (libubnt_encoder ContainerFLV::FeedRtt/BuildOnRtt): an onRtt
 // script tag right away, with the probe's id echoed as 4 raw bytes,
-// rttMillis = our clock now minus the trailer timestamp Protect echoes (in
-// the probe's clock rate), and encDelay = capture-to-encoder latency, 0 here
-// since nothing is encoded. Nothing is sent before the stream has started.
+// rttMillis = time since the trailer Protect echoes (id(4) rate(4) ticks(8))
+// was written, and encDelay = capture-to-encoder latency, 0 here since
+// nothing is encoded. A camera computes it from its capture clock; trailers
+// here follow the source's clock, which may be off wall time by up to
+// maxDrift, so the send time of each recent trailer is kept instead. An
+// unknown trailer gives -1. Nothing is sent before the stream has started.
 func (c *Consumer) RTT(body []byte) {
 	if len(body) < 16 {
 		return
 	}
+	rate := int64(binary.BigEndian.Uint32(body[4:8]))
+	echoed := binary.BigEndian.Uint64(body[8:16])
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.wr == nil || c.closed || !c.started {
 		return
 	}
-	rate := int64(binary.BigEndian.Uint32(body[4:8]))
-	echoed := int64(binary.BigEndian.Uint64(body[8:16]))
+	now := c.now()
 	rtt := -1.0
-	if now := ticks(c.now().Sub(c.mux.start), rate); rate > 0 && now >= echoed {
-		rtt = float64(((now-echoed)*1000 + rate/2) / rate)
+	if echoed <= math.MaxInt64 {
+		if at, ok := c.mux.sentAt(rate, int64(echoed)); ok && !now.Before(at) {
+			rtt = float64(now.Sub(at).Round(time.Millisecond).Milliseconds())
+		}
 	}
 	msg := Object{
 		{"encDelay", 0.0},
 		{"id", string(body[0:4])},
 		{"rttMillis", rtt},
 	}
-	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.vpos, ScriptData("onRtt", msg)))
+	c.mux.stamp = now
+	c.write(c.mux.appendTag(c.buf[:0], tagScript, c.mux.last, ScriptData("onRtt", msg)))
 }

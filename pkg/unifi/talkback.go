@@ -2,6 +2,7 @@ package unifi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -63,6 +64,20 @@ func (c *Camera) listenTalkback(port int) error {
 		port = talkbackPort
 	}
 
+	// Only the Protect console may play audio on the speaker. Resolved before
+	// the lock; without its address nothing listens (never open to anyone).
+	allowed := map[string]bool{}
+	if ip := net.ParseIP(c.Host); ip != nil {
+		allowed[ip.String()] = true
+	} else if ips, err := net.LookupIP(c.Host); err == nil {
+		for _, ip := range ips {
+			allowed[ip.String()] = true
+		}
+	}
+	if len(allowed) == 0 {
+		return fmt.Errorf("can't resolve the console address %q", c.Host)
+	}
+
 	c.talk.mu.Lock()
 	defer c.talk.mu.Unlock()
 
@@ -85,14 +100,6 @@ func (c *Camera) listenTalkback(port int) error {
 	c.talk.conn, c.talk.port = conn, port
 	c.Log.Info().Msgf("[unifi] %s: talkback listening on udp/%d", c.Name, port)
 
-	// Only the Protect console may play audio on the speaker.
-	allowed := map[string]bool{}
-	if ips, err := net.LookupIP(c.Host); err == nil {
-		for _, ip := range ips {
-			allowed[ip.String()] = true
-		}
-	}
-
 	go func() {
 		buf := make([]byte, 2048)
 		for {
@@ -100,7 +107,7 @@ func (c *Camera) listenTalkback(port int) error {
 			if err != nil {
 				return // closed
 			}
-			if len(allowed) > 0 && !allowed[from.IP.String()] {
+			if !allowed[from.IP.String()] {
 				continue
 			}
 			if n > 7 && buf[0] == 0xFF && buf[1]&0xF0 == 0xF0 { // ADTS sync word
