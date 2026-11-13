@@ -577,6 +577,15 @@ func (c *Camera) stopChannel(name string) {
 	}
 }
 
+// SetHDR tells the camera the HDR state the image sensor has, before Run:
+// Protect asks for it after connecting and only switches (and waits for a
+// stream restart) when it differs from what it wants.
+func (c *Camera) SetHDR(on bool) {
+	c.mu.Lock()
+	c.hdr = on
+	c.mu.Unlock()
+}
+
 // restartStreams ends and reopens every running stream, as a UniFi camera's
 // encoder restart does (HDR). Protect keeps the camera's video settings
 // greyed out ("reconfiguration in progress") until its high-quality stream

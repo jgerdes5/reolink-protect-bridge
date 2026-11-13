@@ -66,6 +66,14 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 		}
 	}
 	b.setEncoder(enc)
+
+	// The doorbell's HDR, so Protect sees the real state after a restart
+	// instead of switching it again.
+	if img, err := client.GetConfig(ctx, baichuan.MsgImageGet, ch, nil); err == nil {
+		if v := img.Value("InputAdvanceCfg/hdrSwitch"); v != "" && b.proto != nil {
+			b.proto.SetHDR(v != "0")
+		}
+	}
 	for i, s := range enc {
 		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, offers %v fps and %v kbit/s", encStreams[i], s.fps, s.kbps, s.fpsTable, s.kbpsTable)
 	}
