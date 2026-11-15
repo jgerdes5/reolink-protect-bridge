@@ -28,11 +28,11 @@ Doorbell instead.
 | Reolink Video Doorbell WiFi | Tested |
 | Reolink Video Doorbell PoE | Should work, untested. Same camera and features as the WiFi model, only the network connection differs |
 | Reolink Video Doorbell (Battery), 2nd Gen, in Wired Power Mode | Might work, untested. In this mode it runs like a plugged-in camera with continuous recording |
-| Battery doorbells running on battery | Not supported |
+| Battery doorbells running on battery | Untested, may not work |
 
-Protect expects a camera to stream around the clock. A battery doorbell sleeps
-between events to save power, and keeping it streaming would drain the battery
-within days.
+Protect expects a camera to stream around the clock, while a battery doorbell
+sleeps between events to save power. Even if it works, keeping it streaming
+would likely drain the battery within days.
 
 ## Features
 

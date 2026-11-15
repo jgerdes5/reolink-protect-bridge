@@ -6,8 +6,8 @@ live view, recording, ring, talkback and smart detections. See the
 details.
 
 Tested with the Reolink Video Doorbell WiFi. The PoE model should work too.
-Battery doorbells running on battery are not supported, since they sleep
-between events.
+Battery doorbells running on battery are untested and may not work, since they
+sleep between events.
 
 ## Setup
 
