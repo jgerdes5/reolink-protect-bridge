@@ -23,6 +23,9 @@ Doorbell instead.
 
 ## Supported doorbells
 
+Only Reolink doorbells are supported for now. Other Reolink cameras might be
+supported in the future.
+
 | Doorbell | Status |
 |----------|--------|
 | Reolink Video Doorbell WiFi | Tested |
