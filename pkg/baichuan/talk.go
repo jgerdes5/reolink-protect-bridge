@@ -181,6 +181,26 @@ func (c *Client) StartTalk(ctx context.Context, channel uint8) (*TalkSession, er
 }
 
 func (c *Client) getTalkAbility(ctx context.Context, channel uint8) (*TalkAbility, error) {
+	c.talkMu.Lock()
+	cached := c.talkAbility[channel]
+	c.talkMu.Unlock()
+	if cached != nil {
+		return cached, nil
+	}
+	ability, err := c.askTalkAbility(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+	c.talkMu.Lock()
+	if c.talkAbility == nil {
+		c.talkAbility = map[uint8]*TalkAbility{}
+	}
+	c.talkAbility[channel] = ability
+	c.talkMu.Unlock()
+	return ability, nil
+}
+
+func (c *Client) askTalkAbility(ctx context.Context, channel uint8) (*TalkAbility, error) {
 	extension, err := buildTalkExtension(channel, false)
 	if err != nil {
 		return nil, err

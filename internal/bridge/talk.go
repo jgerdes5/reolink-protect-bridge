@@ -11,6 +11,7 @@ import (
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/jgerdes5/reolink-protect-bridge/internal/source"
+	"github.com/jgerdes5/reolink-protect-bridge/pkg/reolink"
 	"github.com/pion/rtp"
 )
 
@@ -21,12 +22,16 @@ import (
 // the first frame and closes after talkIdle without audio, which also releases
 // the camera's talk channel.
 
-const talkIdle = 2 * time.Second
+// talkIdle matches the doorbell's own talk session (reolink.TalkIdle): the
+// decoder and the backchannel stay up as long as the doorbell keeps listening,
+// so speaking again within it starts at once.
+const talkIdle = reolink.TalkIdle
 
 type talker struct {
 	key    string
 	src    *source.Source // the stream with the doorbell's talk channel (main)
 	ffmpeg string
+	idle   time.Duration // talkIdle if 0
 
 	mu     sync.Mutex
 	ch     chan []byte   // frames for the running session, nil when idle
@@ -95,7 +100,11 @@ func (t *talker) session(ch chan []byte, quit chan struct{}) {
 	}
 	defer closeSess()
 
-	timer := time.NewTimer(talkIdle)
+	idle := t.idle
+	if idle <= 0 {
+		idle = talkIdle
+	}
+	timer := time.NewTimer(idle)
 	defer timer.Stop()
 	for {
 		select {
@@ -106,7 +115,7 @@ func (t *talker) session(ch chan []byte, quit chan struct{}) {
 					closeSess()
 				}
 			}
-			timer.Reset(talkIdle)
+			timer.Reset(idle)
 		case <-timer.C:
 			return
 		case <-quit:
@@ -225,14 +234,28 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 		return nil, err
 	}
 
-	// 20 ms packets, timestamps in samples
+	// 20 ms packets, timestamps in samples. The first, silent one goes out
+	// now: the doorbell's talk session opens on the first packet, so that
+	// starts while ffmpeg is still starting (audio before it is open is
+	// dropped anyway).
+	chunk := rate / 50 * sampleBytes
+	silence := make([]byte, chunk)
+	if format == "alaw" || format == "mulaw" {
+		fill := byte(0xd5) // A-law zero
+		if format == "mulaw" {
+			fill = 0xff
+		}
+		for i := range silence {
+			silence[i] = fill
+		}
+	}
+	recv.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2}, Payload: silence})
 	read := make(chan struct{})
 	go func() {
 		defer close(read)
-		chunk := rate / 50 * sampleBytes
 		buf := make([]byte, chunk)
-		var seq uint16
-		var ts uint32
+		seq := uint16(1)
+		ts := uint32(chunk / sampleBytes)
 		for {
 			if _, err := io.ReadFull(stdout, buf); err != nil {
 				return

@@ -45,6 +45,9 @@ type Client struct {
 	wg        sync.WaitGroup
 
 	keepAliveOnce sync.Once
+
+	talkMu      sync.Mutex
+	talkAbility map[uint8]*TalkAbility // per channel, asked once (saves a round trip per talk session)
 }
 
 type ioReadWriteCloser interface {

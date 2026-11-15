@@ -97,7 +97,7 @@ func TestTalkback(t *testing.T) {
 	defer cancel()
 	go src.Run(ctx)
 
-	tk := &talker{key: "test", src: src, ffmpeg: "ffmpeg"}
+	tk := &talker{key: "test", src: src, ffmpeg: "ffmpeg", idle: 2 * time.Second}
 	for _, f := range frames {
 		tk.feed(f)
 		time.Sleep(5 * time.Millisecond)
@@ -119,7 +119,7 @@ func TestTalkback(t *testing.T) {
 		tk.mu.Lock()
 		defer tk.mu.Unlock()
 		return tk.ch == nil
-	}, talkIdle+3*time.Second, 50*time.Millisecond)
+	}, tk.idle+3*time.Second, 50*time.Millisecond)
 
 	// talking again opens a new session that plays too
 	speaker.mu.Lock()

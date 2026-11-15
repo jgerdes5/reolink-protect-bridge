@@ -175,6 +175,11 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// TalkIdle is how long the doorbell's talk session stays open after the last
+// audio. Opening one takes a second or more (two round trips to the doorbell,
+// audio is dropped meanwhile), so a pause in a conversation shouldn't close it.
+const TalkIdle = 30 * time.Second
+
 func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Receiver) error {
 	// A sender closes with the track it was bound to (a talk session ending);
 	// a closed sender drops everything, so the next session needs a new one.
@@ -216,7 +221,7 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 			if c.talkTimer != nil {
 				c.talkTimer.Stop()
 			}
-			c.talkTimer = time.AfterFunc(5*time.Second, func() {
+			c.talkTimer = time.AfterFunc(TalkIdle, func() {
 				c.talkMu.Lock()
 				defer c.talkMu.Unlock()
 				if c.talkSession != nil {
@@ -272,10 +277,12 @@ func (c *Client) SetupBackchannel() error {
 	ctx, cancel := context.WithTimeout(context.Background(), core.ConnDialTimeout)
 	defer cancel()
 
+	start := time.Now()
 	session, err := c.bc.StartTalk(ctx, c.channel)
 	if err != nil {
 		return err
 	}
+	c.logDebug("talkback session open after %d ms", time.Since(start).Milliseconds())
 	c.talkSession = session
 	c.talkEncoder = &baichuan.ADPCMEncoder{}
 	return nil
