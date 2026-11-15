@@ -52,8 +52,8 @@ curl -fsSLO https://raw.githubusercontent.com/jgerdes5/reolink-protect-bridge/ma
 sh install.sh
 ```
 
-While the repository is private, the download needs a GitHub token
-(fine-grained, read-only "Contents" permission on the repository):
+For a private fork, the download needs a GitHub token (fine-grained,
+read-only "Contents" permission on the repository):
 
 ```sh
 export GITHUB_TOKEN=github_pat_xxx
