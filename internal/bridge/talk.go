@@ -15,9 +15,9 @@ import (
 	"github.com/pion/rtp"
 )
 
-// Talkback: Protect sends ADTS AAC (22.05 kHz mono) over UDP, one frame per
-// datagram (pkg/unifi/talkback.go). go2rtc backchannels take PCM-family codecs,
-// so ffmpeg decodes the AAC. A session opens with the first frame and closes
+// Talkback: Protect sends ADTS AAC over UDP, or Opus over RTP for HomeKit
+// (pkg/unifi/talkback.go). go2rtc backchannels take PCM-family codecs, so
+// ffmpeg decodes the audio. A session opens with the first packet and closes
 // after talkIdle without audio, releasing the camera's talk channel.
 
 // talkIdle matches the doorbell's own talk session (reolink.TalkIdle): the
@@ -32,13 +32,22 @@ type talker struct {
 	idle   time.Duration // talkIdle if 0
 
 	mu     sync.Mutex
-	ch     chan []byte   // frames for the running session, nil when idle
+	ch     chan talkPkt  // packets for the running session, nil when idle
 	quit   chan struct{} // closed by close
 	closed bool
 	wg     sync.WaitGroup // the running session
 }
 
-func (t *talker) feed(adts []byte) {
+// talkPkt is one ADTS frame, or one Opus packet when opus is set.
+type talkPkt struct {
+	opus bool
+	b    []byte
+}
+
+func (t *talker) feed(adts []byte)    { t.push(talkPkt{b: adts}) }
+func (t *talker) feedOpus(pkt []byte) { t.push(talkPkt{opus: true, b: pkt}) }
+
+func (t *talker) push(p talkPkt) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
@@ -48,14 +57,15 @@ func (t *talker) feed(adts []byte) {
 		if t.quit == nil {
 			t.quit = make(chan struct{})
 		}
-		// ~2 s of audio while the session opens: the burst after opening must
-		// fit a go2rtc sender's 128-packet buffer
-		t.ch = make(chan []byte, 48)
+		// 1-2 s of audio while the session opens (AAC frames are ~46 ms, Opus
+		// packets 20 ms): the burst after opening must fit a go2rtc sender's
+		// 128-packet buffer
+		t.ch = make(chan talkPkt, 48)
 		t.wg.Add(1)
 		go t.run(t.ch, t.quit)
 	}
 	select {
-	case t.ch <- adts:
+	case t.ch <- p:
 	default:
 	}
 }
@@ -64,13 +74,14 @@ func (t *talker) feed(adts []byte) {
 // session is fully closed, so audio arriving meanwhile reopens one here
 // instead of racing a second session against the closing one on the same
 // backchannel.
-func (t *talker) run(ch chan []byte, quit chan struct{}) {
+func (t *talker) run(ch chan talkPkt, quit chan struct{}) {
 	defer t.wg.Done()
+	var next *talkPkt
 	for {
-		t.session(ch, quit)
+		next = t.session(ch, quit, next)
 
 		t.mu.Lock()
-		if len(ch) == 0 || t.closed {
+		if (next == nil && len(ch) == 0) || t.closed {
 			t.ch = nil
 			t.mu.Unlock()
 			return
@@ -79,11 +90,22 @@ func (t *talker) run(ch chan []byte, quit chan struct{}) {
 	}
 }
 
-// session opens a talk session and feeds it until no audio arrived for
-// talkIdle. If the session can't open or ffmpeg dies, audio is dropped until
-// the pause, so a broken source is not retried for every frame.
-func (t *talker) session(ch chan []byte, quit chan struct{}) {
-	sess, err := openTalk(t.src, t.ffmpeg)
+// session opens a talk session for the format of the first packet and feeds
+// it until no audio arrived for talkIdle. A packet in the other format ends
+// it and is returned, to start the next session. If the session can't open or
+// ffmpeg dies, audio is dropped until the pause, so a broken source is not
+// retried for every packet.
+func (t *talker) session(ch chan talkPkt, quit chan struct{}, first *talkPkt) *talkPkt {
+	if first == nil {
+		select {
+		case p := <-ch:
+			first = &p
+		case <-quit:
+			return nil
+		}
+	}
+	opus := first.opus
+	sess, err := openTalk(t.src, t.ffmpeg, opus)
 	if err != nil {
 		log.Warn().Err(err).Msgf("[talkback] %s:", t.key)
 	} else {
@@ -104,20 +126,28 @@ func (t *talker) session(ch chan []byte, quit chan struct{}) {
 	}
 	timer := time.NewTimer(idle)
 	defer timer.Stop()
+	write := func(p talkPkt) {
+		if sess == nil {
+			return
+		}
+		if err := sess.write(p.b); err != nil {
+			log.Warn().Err(err).Msgf("[talkback] %s: decoder", t.key)
+			closeSess()
+		}
+	}
+	write(*first)
 	for {
 		select {
-		case b := <-ch:
-			if sess != nil {
-				if _, err := sess.stdin.Write(b); err != nil {
-					log.Warn().Err(err).Msgf("[talkback] %s: decoder", t.key)
-					closeSess()
-				}
+		case p := <-ch:
+			if p.opus != opus {
+				return &p
 			}
+			write(p)
 			timer.Reset(idle)
 		case <-timer.C:
-			return
+			return nil
 		case <-quit:
-			return
+			return nil
 		}
 	}
 }
@@ -185,10 +215,19 @@ type talkSession struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	read   chan struct{} // closed when ffmpeg's output is read to the end
+	ogg    *oggWriter    // Opus input: packets wrapped in Ogg for ffmpeg
 	format string
 }
 
-func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
+func (s *talkSession) write(b []byte) error {
+	if s.ogg != nil {
+		return s.ogg.packet(b)
+	}
+	_, err := s.stdin.Write(b)
+	return err
+}
+
+func openTalk(src *source.Source, ffmpegBin string, opus bool) (*talkSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -211,10 +250,14 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 
 	format, sampleBytes := rawFormat(recv.Codec)
 	rate := int(recv.Codec.ClockRate)
+	in := "aac"
+	if opus {
+		in = "ogg"
+	}
 	cmd := exec.Command(ffmpegBin,
 		"-hide_banner", "-loglevel", "error",
 		"-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "32", "-analyzeduration", "0",
-		"-f", "aac", "-i", "pipe:0",
+		"-f", in, "-i", "pipe:0",
 		"-ac", "1", "-ar", strconv.Itoa(rate), "-f", format, "-flush_packets", "1", "pipe:1",
 	)
 	stdin, err := cmd.StdinPipe()
@@ -230,6 +273,17 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 	if err = cmd.Start(); err != nil {
 		src.RemoveConsumer(cons)
 		return nil, err
+	}
+	var ogg *oggWriter
+	if opus {
+		ogg = &oggWriter{w: stdin, serial: 0x52504231}
+		if err = ogg.opusHeaders(); err != nil {
+			_ = stdin.Close()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			src.RemoveConsumer(cons)
+			return nil, err
+		}
 	}
 
 	// 20 ms packets, timestamps in samples. A silent first packet opens the
@@ -265,8 +319,12 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 		}
 	}()
 
-	return &talkSession{src: src, cons: cons, cmd: cmd, stdin: stdin, read: read,
-		format: recv.Codec.Name + "/" + strconv.Itoa(rate)}, nil
+	name := "AAC"
+	if opus {
+		name = "Opus"
+	}
+	return &talkSession{src: src, cons: cons, cmd: cmd, stdin: stdin, read: read, ogg: ogg,
+		format: name + " to " + recv.Codec.Name + "/" + strconv.Itoa(rate)}, nil
 }
 
 // close lets ffmpeg flush the last audio: stdin closed, output read to the

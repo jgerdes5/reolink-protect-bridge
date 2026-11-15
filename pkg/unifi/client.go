@@ -62,6 +62,8 @@ type Camera struct {
 	// Talk, if set, makes the camera a speaker: it receives Protect's talkback
 	// audio, one ADTS AAC frame (22.05 kHz mono) per call. See talkback.go.
 	Talk func(adts []byte)
+	// TalkOpus receives Opus talkback (HomeKit), one packet per call.
+	TalkOpus func(pkt []byte)
 
 	Log zerolog.Logger
 

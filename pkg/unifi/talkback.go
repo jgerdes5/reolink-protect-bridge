@@ -1,6 +1,7 @@
 package unifi
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -12,7 +13,9 @@ import (
 // Talkback as Protect sets it up for a camera: ChangeTalkbackSettings with
 // typeFmt "aac", typeIn "serverudp", bindPort 7004, 22050 Hz mono. The camera
 // listens on that UDP port and Protect sends one ADTS AAC frame per datagram
-// to the camera's IP (the ip in hello).
+// to the camera's IP (the ip in hello). While HomeKit talks, Protect switches
+// to typeFmt "opus", typeIn "serverudp-rtp" (24 kHz): Opus in RTP on the same
+// port.
 
 const talkbackPort = 7004
 
@@ -48,8 +51,8 @@ func (c *Camera) changeTalkbackSettings(payload json.RawMessage) any {
 		s.BindPort = talkbackPort
 	}
 
-	if s.TypeFmt != "aac" {
-		c.Log.Warn().Msgf("[unifi] %s: talkback format %q not supported, only aac", c.Name, s.TypeFmt)
+	if s.TypeFmt != "aac" && (s.TypeFmt != "opus" || c.TalkOpus == nil) {
+		c.Log.Warn().Msgf("[unifi] %s: talkback format %q not supported", c.Name, s.TypeFmt)
 	} else if err := c.listenTalkback(s.BindPort); err != nil {
 		c.Log.Warn().Err(err).Msgf("[unifi] %s: talkback listener", c.Name)
 	}
@@ -113,12 +116,39 @@ func (c *Camera) listenTalkback(port int) error {
 			if !allowed[from.IP.String()] {
 				continue
 			}
-			if n > 7 && buf[0] == 0xFF && buf[1]&0xF0 == 0xF0 { // ADTS sync word
+			switch {
+			case n > 7 && buf[0] == 0xFF && buf[1]&0xF0 == 0xF0: // ADTS sync word
 				c.Talk(append([]byte(nil), buf[:n]...))
+			case c.TalkOpus != nil:
+				if pkt := rtpPayload(buf[:n]); len(pkt) > 0 {
+					c.TalkOpus(append([]byte(nil), pkt...))
+				}
 			}
 		}
 	}()
 	return nil
+}
+
+// rtpPayload is an RTP packet's payload (RFC 3550), nil if b isn't one.
+func rtpPayload(b []byte) []byte {
+	if len(b) < 12 || b[0]>>6 != 2 {
+		return nil
+	}
+	off := 12 + 4*int(b[0]&0x0F)
+	if b[0]&0x10 != 0 { // header extension
+		if len(b) < off+4 {
+			return nil
+		}
+		off += 4 + 4*int(binary.BigEndian.Uint16(b[off+2:]))
+	}
+	end := len(b)
+	if b[0]&0x20 != 0 && end > 0 { // padding
+		end -= int(b[end-1])
+	}
+	if off >= end {
+		return nil
+	}
+	return b[off:end]
 }
 
 // closeTalkback stops the listener (when the camera stops).

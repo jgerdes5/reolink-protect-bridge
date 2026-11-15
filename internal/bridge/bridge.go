@@ -216,6 +216,7 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 	if opts.Talkback {
 		b.talk = &talker{key: opts.Name, src: b.main, ffmpeg: opts.FFmpeg}
 		b.proto.Talk = b.talk.feed
+		b.proto.TalkOpus = b.talk.feedOpus
 	}
 	// Always receive Protect's settings: which smart detections are on filters
 	// the events; writing them to the doorbell is optional.

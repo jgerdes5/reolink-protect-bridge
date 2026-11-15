@@ -1,7 +1,9 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"os/exec"
 	"sync"
 	"testing"
@@ -143,4 +145,70 @@ func TestRawFormat(t *testing.T) {
 		f, _ := rawFormat(&core.Codec{Name: codec})
 		require.Equal(t, want, f)
 	}
+}
+
+// opusPackets encodes a 1 s tone as Opus 24 kHz mono in 20 ms packets, as
+// Protect sends HomeKit talkback (one packet per RTP datagram).
+func opusPackets(t *testing.T) [][]byte {
+	out, err := exec.Command("ffmpeg", "-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=24000", "-t", "1",
+		"-ac", "1", "-c:a", "libopus", "-frame_duration", "20", "-f", "ogg", "pipe:1").Output()
+	if err != nil {
+		t.Skip("ffmpeg with libopus not available:", err)
+	}
+	var pkts [][]byte
+	_ = readOggPackets(bytes.NewReader(out), func(p []byte) { pkts = append(pkts, p) })
+	require.Greater(t, len(pkts), 2)
+	return pkts[2:] // without OpusHead and OpusTags
+}
+
+func TestTalkbackOpus(t *testing.T) {
+	pkts := opusPackets(t)
+	frames := adtsFrames(t)
+
+	speaker := &speakerStats{}
+	src := source.New("main", func() (source.Producer, error) { return newFakeSpeaker(speaker), nil }, zerolog.Nop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go src.Run(ctx)
+
+	tk := &talker{key: "test", src: src, ffmpeg: "ffmpeg", idle: 2 * time.Second}
+	defer tk.close()
+	played := func(min int) func() bool {
+		return func() bool {
+			speaker.mu.Lock()
+			defer speaker.mu.Unlock()
+			return speaker.samples > min
+		}
+	}
+
+	for _, p := range pkts {
+		tk.feedOpus(p)
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.Eventually(t, played(12000), 5*time.Second, 50*time.Millisecond)
+
+	// AAC right after Opus ends the Opus session and plays in a new one
+	speaker.mu.Lock()
+	speaker.samples = 0
+	speaker.mu.Unlock()
+	for _, f := range frames {
+		tk.feed(f)
+		time.Sleep(5 * time.Millisecond)
+	}
+	require.Eventually(t, played(12000), 5*time.Second, 50*time.Millisecond)
+}
+
+func TestOggWriterRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	o := &oggWriter{w: &buf, serial: 1}
+	require.NoError(t, o.opusHeaders())
+	big := bytes.Repeat([]byte{0xfc}, 600) // spans several lacing segments
+	require.NoError(t, o.packet([]byte{0xfc, 1, 2}))
+	require.NoError(t, o.packet(big))
+	var got [][]byte
+	require.ErrorIs(t, readOggPackets(&buf, func(p []byte) { got = append(got, p) }), io.EOF)
+	require.Len(t, got, 4)
+	require.Equal(t, "OpusHead", string(got[0][:8]))
+	require.Equal(t, big, got[3])
 }
