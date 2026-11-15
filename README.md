@@ -12,6 +12,15 @@ work in the Protect app, without ONVIF or a third-party camera entry.
 > and UniFi Protect 7.3. Reports from other models and Protect versions are
 > welcome.
 
+## Why
+
+UniFi Protect can add a Reolink doorbell as a third-party camera over ONVIF,
+but it never feels like part of the system. Live view and recordings stutter,
+rings and detections don't show up as events, and the whole experience falls
+well short of Ubiquiti's own cameras. I wanted the doorbell to behave like
+every other camera in Protect, so this bridge makes it look like a real G4
+Doorbell instead.
+
 ## Supported doorbells
 
 | Doorbell | Status |
