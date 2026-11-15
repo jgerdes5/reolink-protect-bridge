@@ -19,7 +19,7 @@ services:
     #    it knows for the camera (the host's LAN IP). Behind Docker NAT the
     #    console's packets would not reach the bridge, and the address the
     #    bridge advertises would be the container IP, which Protect can't reach.
-    #  - Device discovery (Reolink and UniFi adoption) uses UDP broadcast, which
+    #  - Finding the UniFi console uses a UDP broadcast (port 10001), which
     #    does not cross the Docker bridge network.
     # With host networking the web UI listens directly on host port 8080,
     # "ports:" is not used. To use another port, change it on the web page

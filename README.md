@@ -9,8 +9,9 @@ work in the Protect app, without ONVIF or a third-party camera entry.
 
 > [!NOTE]
 > This is an early release, only tested with the Reolink Video Doorbell WiFi
-> and UniFi Protect 7.3. Reports from other models and Protect versions are
-> welcome.
+> and UniFi Protect 7.3, running as a systemd service. The Docker image and
+> the Home Assistant add-on haven't been tested yet. Reports from other models,
+> Protect versions and setups are welcome.
 
 ## Why
 
@@ -46,22 +47,20 @@ would likely drain the battery within days.
 - Privacy masks
 - Protect's camera settings are applied to the doorbell: image, night vision,
   HDR, status light, volume, overlay, frame rate and bitrate
-- H.264 and H.265
 - Web interface with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a systemd service
-- Shows up in Home Assistant's UniFi Protect integration like any other
-  Protect doorbell, ready for automations
+- Should appear in Home Assistant's UniFi Protect integration like any other
+  Protect doorbell (not tested yet)
 
 ## Limitations
 
 - One doorbell per bridge, and one bridge per IP address
 - Custom ringtones from Protect aren't supported; the doorbell plays its own
   chime
-- No face, licence plate, package or audio detection, since the doorbell's AI
-  doesn't provide them
+- No face recognition, licence plate, package or audio detections
 - Privacy masks are limited to 4 rectangles
 - A few Protect settings have no equivalent on the doorbell and are ignored,
-  such as IR LED level, microphone volume and status sounds
+  such as IR LED brightness, microphone volume and status sounds
 - No HomeKit talkback
 - Protect updates can change the camera protocol at any time
 
@@ -72,9 +71,9 @@ Reolink doorbell ◀── Baichuan ──▶ Reolink Protect Bridge ◀── U
 ```
 
 Video and the doorbell's AAC audio are passed through without re-encoding, so
-the bridge runs fine on small hardware. ffmpeg is used for two things: Opus
-audio, which Protect's live view expects from UniFi cameras, and converting the
-low-quality stream to H.265 when Protect's enhanced encoding is turned on.
+the bridge runs fine on small hardware. ffmpeg handles the rest: an Opus copy
+of the audio, which Protect's live view expects from UniFi cameras, decoding
+talkback audio for the doorbell, and snapshots.
 
 The bridge opens all connections to the console itself. The only traffic
 Protect starts on its own is talkback audio.
@@ -83,7 +82,8 @@ Protect starts on its own is talkback audio.
 
 - A Reolink video doorbell with continuous power (see
   [Supported doorbells](#supported-doorbells))
-- UniFi Protect 7 on a UniFi console (Dream Machine, Cloud Key, UNVR, ...)
+- UniFi Protect on a UniFi console (Dream Machine, Cloud Key, UNVR, ...),
+  tested with version 7.3
 - An always-on host on the same network with a **fixed IP address**. Protect
   remembers the camera by this address.
 - A local UniFi OS user without SSO or 2FA and with full Protect access, or an
@@ -93,8 +93,11 @@ Protect starts on its own is talkback audio.
 
 ### Home Assistant add-on
 
-1. Go to **Settings → Add-ons → Add-on Store**, open the menu (⋮) →
+Requires Home Assistant OS, where add-ons are called apps since version 2026.2.
+
+1. Go to **Settings → Apps → Install app**, open the menu (⋮) →
    **Repositories** and add `https://github.com/jgerdes5/reolink-protect-bridge`.
+   On older versions this is under **Settings → Add-ons → Add-on Store**.
 2. Install **Reolink Protect Bridge** and start it.
 3. Open **Reolink Protect** in the sidebar.
 
@@ -110,19 +113,21 @@ docker compose up -d
 ```
 
 The container needs host networking, because talkback arrives on UDP 7004 and
-discovery uses broadcasts. The web interface listens on port 8080.
+finding the console uses a broadcast. The web interface listens on port 8080.
 
 ### Linux
 
-On Debian or Ubuntu:
+The bridge is a single binary and runs on any Linux with ffmpeg. The install
+script sets it up as a systemd service:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/jgerdes5/reolink-protect-bridge/main/deploy/install.sh
 sudo sh install.sh
 ```
 
-This installs the binary, ffmpeg and a systemd service. Running it again
-updates to the latest release. For Proxmox there's a step-by-step guide in
+On Debian and Ubuntu the script installs ffmpeg itself; on other distributions,
+install ffmpeg and curl with your package manager first. Running the script
+again updates to the latest release. For Proxmox there's a step-by-step guide in
 [deploy/proxmox.md](deploy/proxmox.md). Prebuilt binaries are attached to each
 [release](https://github.com/jgerdes5/reolink-protect-bridge/releases).
 
@@ -162,6 +167,9 @@ mask**. The doorbell blacks out the video; its microphone keeps recording.
 | Console → bridge | UDP 7004 (talkback) |
 | Browser → bridge | TCP 8080 (web interface, configurable) |
 
+To find devices, the bridge scans the local network for doorbells on TCP 9000
+and looks for the console with a UDP broadcast on port 10001.
+
 ## Troubleshooting
 
 - **The camera doesn't show up in Protect.** Check the log on the
@@ -173,8 +181,6 @@ mask**. The doorbell blacks out the video; its microphone keeps recording.
 - **Recordings have gaps.** Make sure the host's clock is synced over NTP.
 - **No talkback.** Check that UDP 7004 from the console to the bridge isn't
   blocked.
-- **No video after switching the doorbell to H.265.** Restart the bridge, then
-  turn on enhanced encoding for the camera in Protect.
 - **Rings show up in the log but not in Protect.** Set the ring method to
   "Protect API" under **Options**.
 

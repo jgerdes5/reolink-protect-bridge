@@ -1,5 +1,5 @@
 #!/bin/sh
-# Reolink Protect Bridge installer for Debian/Ubuntu (incl. Proxmox LXC).
+# Reolink Protect Bridge installer for Linux with systemd (incl. Proxmox LXC).
 #
 # Usage (as root):
 #   sh install.sh                        # install/upgrade latest release binary
@@ -45,7 +45,8 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 # script file.
 usage() {
 	cat <<'USAGE'
-Reolink Protect Bridge installer for Debian/Ubuntu (incl. Proxmox LXC).
+Reolink Protect Bridge installer for Linux with systemd (incl. Proxmox LXC).
+On Debian/Ubuntu it installs ffmpeg itself; elsewhere install ffmpeg and curl first.
 
 Usage (as root):
   sh install.sh                        install/upgrade latest release binary
@@ -104,25 +105,38 @@ if [ "$MODE" = uninstall ]; then
 fi
 
 # ------------------------------------------------------------- dependencies --
-command -v apt-get >/dev/null 2>&1 || die "only Debian/Ubuntu (apt) is supported"
-export DEBIAN_FRONTEND=noninteractive
-
-PKGS="ffmpeg ca-certificates"
-if [ "$MODE" = install ]; then
-	PKGS="$PKGS curl"
+if command -v apt-get >/dev/null 2>&1; then
+	export DEBIAN_FRONTEND=noninteractive
+	PKGS="ffmpeg ca-certificates"
+	if [ "$MODE" = install ]; then
+		PKGS="$PKGS curl"
+	else
+		PKGS="$PKGS golang-go git"
+	fi
+	missing=""
+	for p in $PKGS; do
+		dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" ||
+			missing="$missing $p"
+	done
+	if [ -n "$missing" ]; then
+		log "installing packages:$missing"
+		apt-get update -q
+		# shellcheck disable=SC2086
+		apt-get install -y -q --no-install-recommends $missing
+	fi
 else
-	PKGS="$PKGS golang-go git"
-fi
-missing=""
-for p in $PKGS; do
-	dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "install ok installed" ||
-		missing="$missing $p"
-done
-if [ -n "$missing" ]; then
-	log "installing packages:$missing"
-	apt-get update -q
-	# shellcheck disable=SC2086
-	apt-get install -y -q --no-install-recommends $missing
+	# other distributions: the tools must already be installed
+	CMDS="ffmpeg"
+	if [ "$MODE" = install ]; then
+		CMDS="$CMDS curl"
+	else
+		CMDS="$CMDS go git"
+	fi
+	missing=""
+	for c in $CMDS; do
+		command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
+	done
+	[ -z "$missing" ] || die "missing:$missing (install with your package manager, then run this again)"
 fi
 
 # --------------------------------------------------------------------- user --
