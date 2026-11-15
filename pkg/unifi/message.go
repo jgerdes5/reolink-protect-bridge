@@ -94,8 +94,6 @@ func (c *Camera) featureFlags() map[string]any {
 		// them, which turns them into privacy zones. Values as a G4 Instant.
 		"excludeZone":          map[string]any{"maxZones": 16, "rectangleOnly": true},
 		"squareEventThumbnail": true,
-		"maxScaleDownLevel":    2,
-		"downScaleResolutions": [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},
 	}
 	if c.Doorbell {
 		flags["doorbell"] = true // isDoorbell
