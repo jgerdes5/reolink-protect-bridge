@@ -117,7 +117,7 @@ If the doorbell is already in Protect through ONVIF, remove that entry first.
 
 The bridge sets the doorbell's keyframe interval to one second, which Protect
 needs for quick live view. Everything else on the doorbell is only changed when
-"Apply camera settings from Protect" is on.
+"Apply camera settings" is on.
 
 ### Console certificate
 

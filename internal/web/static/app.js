@@ -54,8 +54,15 @@ function since(t) {
   return Math.round(s / 86400) + " d";
 }
 
+// Server errors start lowercase ("the current password is wrong"); show them
+// as sentences, but leave identifiers such as "ffmpeg:" or "x509:" alone.
+function sentence(msg) {
+  if (!msg || !/^[a-z]+(\s|$)/.test(msg)) return msg || "";
+  return msg[0].toUpperCase() + msg.slice(1);
+}
+
 function formError(form, msg) {
-  $("[data-error]", form).textContent = msg || "";
+  $("[data-error]", form).textContent = sentence(msg);
 }
 
 function flashOK(form, msg) {
@@ -108,7 +115,7 @@ async function init() {
     s = await api("GET", "api/session");
     ingress = !!s.ingress;
   } catch (e) {
-    document.body.textContent = "Cannot reach the bridge: " + e.message;
+    $("main").replaceChildren(el("div", { class: "banner error-banner" }, "Cannot reach the bridge: " + e.message));
     return;
   }
   if (s.setup) return showView("setup");
@@ -170,7 +177,7 @@ async function refreshStatus() {
   const missing = $("#missing");
   missing.hidden = st.configured;
   if (!st.configured) {
-    missing.textContent = "The bridge is not running. Missing: " + st.missing.join(", ") + ". Fill these in under Connections.";
+    missing.textContent = "The bridge is not running. Missing: " + st.missing.join(", ") + ". Enter them under Connections.";
   }
   const se = $("#start-error");
   se.hidden = !st.error;
@@ -195,13 +202,16 @@ async function refreshStatus() {
   setText("st-mac", st.mac.replace(/(..)(?!$)/g, "$1:"));
   setText("st-version", st.version);
 
-  const dot = $("#brand-dot");
-  dot.className = "dot " + (!b ? "bad" : b.protect.connected && b.doorbell.main.connected ? "ok" : "warn");
+  const state = !b ? "bad" : b.protect.connected && b.doorbell.main.connected ? "ok" : "warn";
+  $("#brand-dot").className = "dot " + state;
+  const overall = $("#st-overall");
+  overall.className = "badge " + state;
+  overall.textContent = { ok: "Running", warn: "Running, partly connected", bad: "Not running" }[state];
 
   const ul = $("#st-recent");
   ul.replaceChildren();
   const recent = (b && b.recent) || [];
-  if (!recent.length) ul.append(el("li", { class: "muted" }, "None yet."));
+  if (!recent.length) ul.append(el("li", { class: "muted" }, "No events yet."));
   for (const ev of recent.slice().reverse()) {
     ul.append(el("li", {}, el("span", {}, ev.kind), el("span", { class: "muted" }, new Date(ev.time).toLocaleString())));
   }
@@ -241,7 +251,7 @@ async function refreshSnapshot() {
       msg.hidden = true;
     } catch (e) {
       msg.hidden = false;
-      msg.textContent = "No snapshot: " + e.message;
+      msg.textContent = "No snapshot: " + e.message.replace(/^snapshot: /, "");
     }
   });
 }
@@ -323,20 +333,21 @@ function setSecret(form, name, isSet) {
   const input = form[name];
   input.value = "";
   input.dataset.clear = "";
-  input.placeholder = isSet ? "•••••• (stored)" : "";
+  input.placeholder = isSet ? "•••••••• (stored)" : "";
   const hint = $(`[data-hint="${name}"]`, form);
   hint.replaceChildren();
   if (!isSet) return;
-  hint.append("Stored. Leave empty to keep it. ");
+  hint.append("Stored. Leave empty to keep it" + (name === "d.password" ? "." : ", or "));
   if (name !== "d.password") {
     hint.append(el("button", {
       type: "button", class: "link", onclick: ev => {
         input.dataset.clear = "1";
         input.placeholder = "";
         input.required = false;
-        ev.target.parentElement.textContent = "Will be removed when you save.";
+        ev.target.parentElement.textContent = "Removed when you save.";
       },
-    }, "Remove"));
+    }, "remove it"));
+    hint.append(".");
   }
 }
 
@@ -359,9 +370,9 @@ function hostChanged() {
   const pHost = f["p.host"].value.trim();
   const dChanged = dHost !== "" && dHost !== config.doorbell.host;
   const pChanged = pHost !== "" && pHost !== config.protect.host;
-  mark("d.password", dChanged && config.doorbell.password.set, " Address changed: enter the password again.");
-  mark("p.password", pChanged && config.protect.password.set && f["p.username"].value.trim() !== "", " Address changed: enter the password again.");
-  mark("p.token", pChanged && config.protect.token.set, " Address changed: enter the token again or remove it.");
+  mark("d.password", dChanged && config.doorbell.password.set, " The address changed: enter the password again.");
+  mark("p.password", pChanged && config.protect.password.set && f["p.username"].value.trim() !== "", " The address changed: enter the password again.");
+  mark("p.token", pChanged && config.protect.token.set, " The address changed: enter the token again or remove it.");
 }
 for (const name of ["d.host", "p.host", "p.username"]) $("#conn-form")[name].addEventListener("input", hostChanged);
 
@@ -427,7 +438,7 @@ $("#pw-form").addEventListener("submit", async ev => {
     try {
       await api("POST", "api/password", { current: f.current.value, password: f.password.value });
       f.reset();
-      flashOK(f, "Password changed. Other sessions were logged out.");
+      flashOK(f, "Password changed. Other sessions are logged out.");
     } catch (e) { formError(f, e.message); }
   });
 });
@@ -449,16 +460,16 @@ $("#adv-form").addEventListener("submit", async ev => {
 $("#new-identity").addEventListener("click", async ev => {
   const ok = confirm(
     "Create a new camera identity?\n\n" +
-    "Protect will see a brand-new camera: you must adopt it again in Protect, " +
-    "and the old camera stays there as offline (delete it in Protect). " +
-    "Recordings and settings of the old camera are not carried over.");
+    "Protect will see a new camera that must be adopted again. " +
+    "The old camera stays offline in Protect until you delete it there. " +
+    "Its recordings and settings are not carried over.");
   if (!ok) return;
   $("#id-error").textContent = "";
   await busy(ev.target, async () => {
     try {
       await api("POST", "api/identity");
       await loadConfig();
-    } catch (e) { $("#id-error").textContent = e.message; }
+    } catch (e) { $("#id-error").textContent = sentence(e.message); }
   });
 });
 
@@ -470,7 +481,7 @@ async function discover(btn) {
   const kind = btn.dataset.discover;
   const box = $("#found-" + kind);
   box.hidden = false;
-  box.replaceChildren(el("span", { class: "muted" }, kind === "doorbell" ? "Scanning the local network…" : "Searching…"));
+  box.replaceChildren(el("span", { class: "muted" }, "Searching the local network…"));
   await busy(btn, async () => {
     try {
       const d = await api("GET", "api/discover?kind=" + kind);
@@ -495,9 +506,9 @@ async function discover(btn) {
         }, label);
         box.append(b);
       }
-      box.append(el("span", { class: "muted" }, "Click an entry to use it."));
+      box.append(el("span", { class: "muted" }, "Select an entry to use its address."));
     } catch (e) {
-      box.replaceChildren(el("span", { class: "error" }, e.message));
+      box.replaceChildren(el("span", { class: "error" }, sentence(e.message)));
     }
   });
 }

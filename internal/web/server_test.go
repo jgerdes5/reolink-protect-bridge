@@ -182,6 +182,11 @@ func TestStaticAndHeaders(t *testing.T) {
 	require.Contains(t, res.Header.Get("Content-Security-Policy"), "default-src 'self'")
 	res, _ = c.raw("GET", "/app.js")
 	require.Equal(t, 200, res.StatusCode)
+	res, _ = c.raw("GET", "/theme.js")
+	require.Equal(t, 200, res.StatusCode)
+	res, _ = c.raw("GET", "/InterVariable.woff2")
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, "font/woff2", res.Header.Get("Content-Type"))
 }
 
 // As a Home Assistant add-on behind Ingress: no own login, setup refused, the

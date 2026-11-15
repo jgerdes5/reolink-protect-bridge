@@ -30,7 +30,7 @@ with ring and detection events for automations.
 - For a privacy mode, draw an exclusion zone over the whole picture in Protect
   and tick **Privacy mask**. The microphone keeps recording.
 - The bridge sets the doorbell's keyframe interval to one second, even with
-  "Apply camera settings from Protect" turned off.
+  "Apply camera settings" turned off.
 - The console's certificate is trusted on first use. After replacing it, trust
   the new one on the **Connections** page.
 
