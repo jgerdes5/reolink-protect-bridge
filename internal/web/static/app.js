@@ -170,6 +170,14 @@ function streamText(s) {
   return [t, "good"];
 }
 
+// Opus lets Protect's web player use WebRTC (quality switches without a black
+// frame) and HomeKit talkback; without it only AAC is sent.
+function audioText(b) {
+  if (b.opus === "on") return ["AAC + Opus", "good"];
+  if (b.opus === "off") return ["AAC only: ffmpeg has no Opus encoder, so live view goes black when switching quality and HomeKit talkback doesn't work", "bad"];
+  return ["–", ""];
+}
+
 async function refreshStatus() {
   let st;
   try { st = await api("GET", "api/status"); } catch (_) { return; }
@@ -192,10 +200,11 @@ async function refreshStatus() {
     setText("st-protect", p.connected ? "Connected" + (p.since ? " · " + since(p.since) : "") : "Not connected", p.connected ? "good" : "bad");
     setText("st-controller", p.controller || "–");
     setText("st-perror", p.error || "–", p.error ? "bad" : "");
+    setText("st-audio", ...audioText(b));
     setText("st-talk", p.talkback ? "Active" : "Idle");
     setText("st-channels", b.channels && b.channels.length ? b.channels.join(", ") : "None");
   } else {
-    for (const id of ["st-events", "st-protect", "st-controller", "st-perror", "st-talk", "st-channels"]) setText(id, "–");
+    for (const id of ["st-events", "st-protect", "st-controller", "st-perror", "st-audio", "st-talk", "st-channels"]) setText(id, "–");
   }
   setText("st-name", st.name);
   setText("st-model", st.model);
@@ -323,6 +332,7 @@ async function loadConfig() {
   const a = $("#adv-form");
   a.listen.value = config.advanced.listen;
   a.ffmpeg.value = config.advanced.ffmpeg;
+  a.debug.checked = !!config.advanced.debug;
   // in Home Assistant the page is only reached through Ingress
   $("#pw-form").hidden = config.ingress;
   a.listen.disabled = config.ingress;
@@ -447,7 +457,7 @@ $("#adv-form").addEventListener("submit", async ev => {
   ev.preventDefault();
   const f = ev.target;
   formError(f, "");
-  const body = { advanced: { listen: f.listen.value.trim(), ffmpeg: f.ffmpeg.value.trim() } };
+  const body = { advanced: { listen: f.listen.value.trim(), ffmpeg: f.ffmpeg.value.trim(), debug: f.debug.checked } };
   await busy($("button[type=submit]", f), async () => {
     try {
       await api("PUT", "api/config", body);

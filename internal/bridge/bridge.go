@@ -962,6 +962,10 @@ type Status struct {
 	Protect  unifi.Status `json:"protect"`
 	Channels []string     `json:"channels"` // streaming to Protect
 	Recent   []Event      `json:"recent"`
+	// Opus: "on", "off" (ffmpeg has no Opus encoder, OpusError says why) or
+	// "" while not checked yet.
+	Opus      string `json:"opus"`
+	OpusError string `json:"opusError,omitempty"`
 }
 
 type SourceStatus struct {
@@ -977,6 +981,14 @@ type SourceStatus struct {
 
 func (b *Bridge) Status() Status {
 	var st Status
+	b.omu.Lock()
+	switch {
+	case b.opusErr != nil:
+		st.Opus, st.OpusError = "off", b.opusErr.Error()
+	case b.opusEnc != "":
+		st.Opus = "on"
+	}
+	b.omu.Unlock()
 	for i, src := range []*source.Source{b.main, b.sub} {
 		ok, since, err := src.Status()
 		ss := SourceStatus{Connected: ok, Since: since}

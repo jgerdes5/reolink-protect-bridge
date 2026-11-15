@@ -50,12 +50,25 @@ func main() {
 
 func run(dataDir, listen string, ingress bool) int {
 	logs := logbuf.New(os.Stdout, logbuf.Size)
-	level, err := zerolog.ParseLevel(strings.ToLower(envOr("RPB_LOG", "info")))
-	if err != nil || level == zerolog.NoLevel {
-		level = zerolog.InfoLevel
+	// The level is global, so the debug log can be switched on the web page;
+	// RPB_LOG, if set, overrides that switch.
+	envLevel, err := zerolog.ParseLevel(strings.ToLower(os.Getenv("RPB_LOG")))
+	if err != nil || envLevel == zerolog.NoLevel {
+		envLevel = zerolog.NoLevel
 	}
+	setDebug := func(on bool) {
+		switch {
+		case envLevel != zerolog.NoLevel:
+			zerolog.SetGlobalLevel(envLevel)
+		case on:
+			zerolog.SetGlobalLevel(zerolog.DebugLevel)
+		default:
+			zerolog.SetGlobalLevel(zerolog.InfoLevel)
+		}
+	}
+	setDebug(false)
 	zerolog.TimeFieldFormat = time.RFC3339Nano
-	log := zerolog.New(logs).Level(level).With().Timestamp().Logger()
+	log := zerolog.New(logs).Level(zerolog.TraceLevel).With().Timestamp().Logger()
 
 	store, err := config.Open(dataDir)
 	if err != nil {
@@ -72,6 +85,7 @@ func run(dataDir, listen string, ingress bool) int {
 	}
 	cfg := store.Get()
 	logs.SetSecrets(cfg.Secrets())
+	setDebug(cfg.Debug)
 
 	addr := cfg.Web.Listen
 	if ingress {
@@ -100,6 +114,10 @@ func run(dataDir, listen string, ingress bool) int {
 			Log:     log,
 			Version: version,
 			Ingress: ingress,
+			SetDebug: func(on bool) {
+				setDebug(on)
+				log.Info().Bool("debug", on).Msg("[main] debug log")
+			},
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second, // request bodies are small JSON

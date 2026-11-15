@@ -74,6 +74,7 @@ type Config struct {
 	Web      Web      `json:"web"`
 	Admin    Admin    `json:"admin"`
 	FFmpeg   string   `json:"ffmpeg"`
+	Debug    bool     `json:"debug,omitempty"` // debug log
 }
 
 // Default is a fresh configuration without identity.

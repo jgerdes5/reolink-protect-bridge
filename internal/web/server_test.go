@@ -471,3 +471,27 @@ func TestLogDownload(t *testing.T) {
 	require.Contains(t, res.Header.Get("Content-Disposition"), "attachment")
 	require.Contains(t, res.Header.Get("Content-Type"), "text/plain")
 }
+
+func TestDebugLogSwitch(t *testing.T) {
+	c, store, s := newTestServer(t)
+	var got []bool
+	s.opts.SetDebug = func(on bool) { got = append(got, on) }
+	res, _ := c.do("POST", "/api/setup", map[string]string{"password": "first-pass"}, true)
+	require.Equal(t, 200, res.StatusCode)
+
+	ffmpeg := filepath.Join(t.TempDir(), "ffmpeg")
+	require.NoError(t, os.WriteFile(ffmpeg, []byte("#!/bin/sh\n"), 0o755))
+	adv := func(debug bool) map[string]any {
+		return map[string]any{"advanced": map[string]any{"listen": ":8080", "ffmpeg": ffmpeg, "debug": debug}}
+	}
+	res, body := c.do("PUT", "/api/config", adv(true), true)
+	require.Equal(t, 200, res.StatusCode, body)
+	require.Equal(t, true, body["advanced"].(map[string]any)["debug"])
+	require.True(t, store.Get().Debug)
+
+	res, _ = c.do("PUT", "/api/config", adv(true), true) // unchanged: not switched again
+	require.Equal(t, 200, res.StatusCode)
+	res, _ = c.do("PUT", "/api/config", adv(false), true)
+	require.Equal(t, 200, res.StatusCode)
+	require.Equal(t, []bool{true, false}, got)
+}

@@ -44,6 +44,8 @@ type Options struct {
 	// IngressPeer is the only client address accepted in Ingress mode
 	// (default DefaultIngressPeer, the Supervisor's address).
 	IngressPeer string
+	// SetDebug switches the debug log on or off (Options > Advanced).
+	SetDebug func(on bool)
 }
 
 // DefaultIngressPeer is the address Home Assistant's Supervisor connects
@@ -308,6 +310,7 @@ type configView struct {
 type advanced struct {
 	Listen string `json:"listen"` // web page address; takes effect after an app restart
 	FFmpeg string `json:"ffmpeg"`
+	Debug  bool   `json:"debug"`
 }
 
 func viewOf(c config.Config) configView {
@@ -320,7 +323,7 @@ func viewOf(c config.Config) configView {
 	v.Protect.CertPin = c.Protect.CertPin
 	v.Camera = c.Camera
 	v.Identity.MAC = c.Identity.MAC
-	v.Advanced = advanced{Listen: c.Web.Listen, FFmpeg: c.FFmpeg}
+	v.Advanced = advanced{Listen: c.Web.Listen, FFmpeg: c.FFmpeg, Debug: c.Debug}
 	return v
 }
 
@@ -430,7 +433,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			if ffmpeg == "" {
 				ffmpeg = "ffmpeg"
 			}
-			c.Web.Listen, c.FFmpeg = listen, ffmpeg
+			c.Web.Listen, c.FFmpeg, c.Debug = listen, ffmpeg, a.Debug
 		}
 		return nil
 	})
@@ -473,6 +476,9 @@ func (s *Server) handleNewIdentity(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) applied(before, after config.Config) {
 	if s.opts.Logs != nil {
 		s.opts.Logs.SetSecrets(after.Secrets())
+	}
+	if s.opts.SetDebug != nil && before.Debug != after.Debug {
+		s.opts.SetDebug(after.Debug)
 	}
 	if s.opts.Runner == nil {
 		return

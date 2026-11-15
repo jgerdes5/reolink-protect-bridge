@@ -186,6 +186,9 @@ and looks for the console with a UDP broadcast on port 10001.
 - **Rings show up in the log but not in Protect.** Set the ring method to
   "Protect API" under **Options**.
 
+When reporting a problem, turn on **Debug log** under **Options → Advanced**
+and include the log from the **Status** page.
+
 ## Development
 
 ```sh

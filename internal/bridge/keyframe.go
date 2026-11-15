@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"os"
 	"sync"
 	"time"
 
@@ -125,25 +124,17 @@ func streamType(channel string) string {
 	return "subStream"
 }
 
-// Troubleshooting switches (environment, read once): RPB_NO_RTT=1 leaves
-// Protect's round-trip probes unanswered, RPB_NO_KEYFRAME=1 ignores its
-// keyframe requests.
-var (
-	noRTT      = os.Getenv("RPB_NO_RTT") == "1"
-	noKeyframe = os.Getenv("RPB_NO_KEYFRAME") == "1"
-)
-
 // onFeedback handles a message Protect sent back on a channel's socket. It
 // returns false if the stream should end. RTT probes go to rtt, which must
 // not block (it runs on the socket's reading goroutine).
 func (b *Bridge) onFeedback(channel string, passthrough bool, f unifi.Feedback, rtt func(body []byte)) bool {
 	switch {
 	case f.Type == unifi.FeedbackRTT:
-		if rtt != nil && !noRTT {
+		if rtt != nil {
 			rtt(f.Body)
 		}
 	case f.WantsKeyframe():
-		if passthrough && !noKeyframe { // ffmpeg makes its own keyframes every second
+		if passthrough { // ffmpeg makes its own keyframes every second
 			b.keys.request(streamType(channel))
 		}
 	case f.Type == unifi.FeedbackInvalidPoint:

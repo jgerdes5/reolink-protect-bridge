@@ -94,6 +94,7 @@
           <div><dt>Connection</dt><dd id="st-protect">–</dd></div>
           <div><dt>Protect version</dt><dd id="st-controller">–</dd></div>
           <div><dt>Last error</dt><dd id="st-perror">–</dd></div>
+          <div><dt>Audio</dt><dd id="st-audio">–</dd></div>
           <div><dt>Talkback</dt><dd id="st-talk">–</dd></div>
           <div><dt>Streams in use</dt><dd id="st-channels">–</dd></div>
         </dl>
@@ -242,7 +243,11 @@
           <p class="hint"><code>host:port</code> or <code>:port</code>. Takes effect after the app restarts.</p>
           <label class="field"><span class="field-label">ffmpeg</span>
             <input name="ffmpeg" placeholder="ffmpeg" spellcheck="false"></label>
-          <p class="hint">Command name (looked up in PATH) or full path. Used for snapshots, talkback and converting the sub stream to H.265. The file must be named <code>ffmpeg</code>.</p>
+          <p class="hint">Command name (looked up in PATH) or full path. Used for Opus audio, snapshots and talkback. The file must be named <code>ffmpeg</code>.</p>
+          <div class="toggles">
+            <label class="toggle"><span class="toggle-text"><span class="toggle-title">Debug log</span><span class="hint">Log more detail, e.g. to report a problem. Takes effect immediately.</span></span>
+              <input type="checkbox" class="switch" name="debug"></label>
+          </div>
         </div>
         <div class="actions">
           <p class="error" data-error></p>
