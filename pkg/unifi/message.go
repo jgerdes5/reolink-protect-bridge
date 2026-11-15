@@ -90,8 +90,12 @@ func (c *Camera) featureFlags() map[string]any {
 		// privacy zones -> the doorbell's masks (Shelter): at most 4, each
 		// turned into its bounding rectangle. Not rectangleOnly: Protect 7.3's
 		// web UI hides the privacy section for such cameras (real G4s send false).
-		"privacyMask":          true,
-		"privacyMasks":         map[string]any{"maxZones": 4, "rectangleOnly": false},
+		"privacyMask":  true,
+		"privacyMasks": map[string]any{"maxZones": 4, "rectangleOnly": false},
+		// exclusion zones (Protect reads the key "excludeZone"): cut out of the
+		// doorbell's AI detection area; the UI also offers "privacy mask" on
+		// them, which turns them into privacy zones. Values as a G4 Instant.
+		"excludeZone":          map[string]any{"maxZones": 16, "rectangleOnly": true},
 		"squareEventThumbnail": true,
 		"maxScaleDownLevel":    2,
 		"downScaleResolutions": [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},

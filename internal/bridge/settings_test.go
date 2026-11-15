@@ -146,7 +146,7 @@ func TestMotionChangeD340W(t *testing.T) {
 func TestAIAreaChange(t *testing.T) {
 	b := parse(t, aiXML) // 4x2 grid
 	top := unifi.Zone{Coord: []float64{0, 0, 1000, 0, 1000, 500, 0, 500}, Sensitivity: 75, ObjectTypes: []string{"person"}}
-	require.True(t, aiAreaChange([]unifi.Zone{top}, 75)(b))
+	require.True(t, aiAreaChange([]unifi.Zone{top}, nil, 75)(b))
 	require.Equal(t, "75", b.Value("AiDetectCfg/sensitivity"))
 	cells, err := baichuan.DecodeArea(b.Value("AiDetectCfg/area"), 4, 2)
 	require.NoError(t, err)
@@ -155,9 +155,20 @@ func TestAIAreaChange(t *testing.T) {
 	// no zone with this type: empty area, sensitivity kept; on an already
 	// empty grid that is no change, so nothing is written
 	b = parse(t, aiXML)
-	require.False(t, aiAreaChange(nil, -1)(b))
+	require.False(t, aiAreaChange(nil, nil, -1)(b))
 	require.Equal(t, "50", b.Value("AiDetectCfg/sensitivity"))
 	require.Equal(t, "AA==", b.Value("AiDetectCfg/area"))
+}
+
+// Exclusion zones are cut out of the detection area.
+func TestAIAreaExclude(t *testing.T) {
+	b := parse(t, aiXML) // 4x2 grid
+	full := unifi.Zone{Coord: []float64{0, 0, 1000, 0, 1000, 1000, 0, 1000}, ObjectTypes: []string{"person"}}
+	left := unifi.Zone{Coord: []float64{0, 0, 500, 0, 500, 1000, 0, 1000}}
+	require.True(t, aiAreaChange([]unifi.Zone{full}, []unifi.Zone{left}, -1)(b))
+	cells, err := baichuan.DecodeArea(b.Value("AiDetectCfg/area"), 4, 2)
+	require.NoError(t, err)
+	require.Equal(t, []bool{false, false, true, true, false, false, true, true}, cells)
 }
 
 func TestMappings(t *testing.T) {

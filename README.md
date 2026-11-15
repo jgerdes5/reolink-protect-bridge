@@ -34,6 +34,8 @@ Protect app. No ONVIF, no third-party camera entry.
   - name, date and logo overlay
   - motion detection on/off, sensitivity and zones
   - smart detection types, sensitivity and zones
+  - exclusion zones: no smart detections there (cut out of the doorbell's
+    AI detection area); tick "privacy mask" on one to also black it out
 - H.264 and H.265. With the doorbell on H.265, turn on enhanced encoding
   (H.265) for the camera in Protect; the bridge converts the doorbell's
   low-quality stream, which is always H.264, with ffmpeg
@@ -193,7 +195,8 @@ certificate, tick "Trust the certificate the console shows next" and save.
 
 ## Privacy mode
 
-A privacy mask over the whole picture in Protect works as a privacy mode: the
+Privacy masks are drawn as exclusion zones in Protect with "privacy mask"
+ticked. A privacy mask over the whole picture works as a privacy mode: the
 doorbell blacks out the video. It only hides the picture. The doorbell's
 microphone keeps running and its audio still reaches Protect (live view and
 recordings). Whether the ring button and detections behave normally while the

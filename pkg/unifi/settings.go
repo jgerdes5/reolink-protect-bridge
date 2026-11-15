@@ -151,8 +151,11 @@ type SmartDetect struct {
 	Zones       map[string]Zone `json:"zones"`
 	Lines       map[string]Line `json:"lines"`
 	LoiterZones map[string]Zone `json:"loiterZones"`
-	StartMSec   int             `json:"eventStartMSec"`
-	StopMSec    int             `json:"eventStopMSec"`
+	// exclusion zones: no smart detections there (objectTypes lists the
+	// types they apply to, all of them as Protect 7.3 sends it)
+	ExcludeZones map[string]Zone `json:"excludeZones"`
+	StartMSec    int             `json:"eventStartMSec"`
+	StopMSec     int             `json:"eventStopMSec"`
 }
 
 // Motion is ChangeSmartMotionSettings (updateEnhancedMotionSettings).

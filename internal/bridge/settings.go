@@ -600,7 +600,7 @@ func applyAI(ctx context.Context, c *baichuan.Client, ch uint8, sd *unifi.SmartD
 
 	for _, object := range []string{"person", "vehicle", "animal"} {
 		aiType := reolinkAI[object]
-		var zones []unifi.Zone
+		var zones, exclude []unifi.Zone
 		sens := -1
 		for _, z := range sd.Zones {
 			if contains(z.ObjectTypes, object) {
@@ -608,8 +608,13 @@ func applyAI(ctx context.Context, c *baichuan.Client, ch uint8, sd *unifi.SmartD
 				sens = max(sens, z.Sensitivity)
 			}
 		}
+		for _, z := range sd.ExcludeZones {
+			if len(z.ObjectTypes) == 0 || contains(z.ObjectTypes, object) {
+				exclude = append(exclude, z)
+			}
+		}
 		err := update(ctx, c, baichuan.MsgAiDetectGet, baichuan.MsgAiDetectSet, ch, baichuan.AiDetectBody(ch, aiType),
-			aiAreaChange(zones, sens), aiType+" detection area")
+			aiAreaChange(zones, exclude, sens), aiType+" detection area")
 		if err != nil {
 			return err
 		}
@@ -790,8 +795,9 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// aiAreaChange sets one AI type's sensitivity (-1 = keep) and detection area.
-func aiAreaChange(zones []unifi.Zone, sens int) func(*baichuan.Node) bool {
+// aiAreaChange sets one AI type's sensitivity (-1 = keep) and detection area:
+// the cells of its zones without those of the exclusion zones.
+func aiAreaChange(zones, exclude []unifi.Zone, sens int) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
 		changed := false
 		if sens >= 0 && b.Set("AiDetectCfg/sensitivity", strconv.Itoa(clamp(sens, 0, 100))) {
@@ -799,7 +805,16 @@ func aiAreaChange(zones []unifi.Zone, sens int) func(*baichuan.Node) bool {
 		}
 		cols, _ := strconv.Atoi(b.Value("AiDetectCfg/width"))
 		rows, _ := strconv.Atoi(b.Value("AiDetectCfg/height"))
-		if cols > 0 && rows > 0 && b.Set("AiDetectCfg/area", baichuan.EncodeArea(rasterize(zones, cols, rows), cols, rows)) {
+		if cols <= 0 || rows <= 0 {
+			return changed
+		}
+		cells := rasterize(zones, cols, rows)
+		for i, out := range rasterize(exclude, cols, rows) {
+			if out {
+				cells[i] = false
+			}
+		}
+		if b.Set("AiDetectCfg/area", baichuan.EncodeArea(cells, cols, rows)) {
 			changed = true
 		}
 		return changed
