@@ -364,3 +364,10 @@ func TestPrivacyModeWithManyZones(t *testing.T) {
 	b = parse(t, string(b.Marshal()))
 	require.False(t, maskChange(masks)(b))
 }
+
+func TestKeepPackage(t *testing.T) {
+	require.Equal(t, "people,vehicle", keepPackage("people,dog_cat", "people,vehicle"))
+	require.Equal(t, "people,package", keepPackage("people,vehicle,package", "people"))
+	require.Equal(t, "package", keepPackage("package", "none"))
+	require.Equal(t, "none", keepPackage("", "none"))
+}

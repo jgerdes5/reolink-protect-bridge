@@ -605,7 +605,7 @@ func applyAI(ctx context.Context, c *baichuan.Client, ch uint8, sd *unifi.SmartD
 		detect = "none"
 	}
 	if err := update(ctx, c, baichuan.MsgAiCfgGet, baichuan.MsgAiCfgSet, ch, nil, func(b *baichuan.Node) bool {
-		return b.Set("AiCfg/detectType", detect)
+		return b.Set("AiCfg/detectType", keepPackage(b.Value("AiCfg/detectType"), detect))
 	}, "AI detection types"); err != nil {
 		return err
 	}
@@ -632,6 +632,19 @@ func applyAI(ctx context.Context, c *baichuan.Client, ch uint8, sd *unifi.SmartD
 		}
 	}
 	return nil
+}
+
+// keepPackage adds the doorbell's own package detection to the AI types the
+// bridge writes: it is switched in the Reolink app, and a SET over Baichuan
+// can't set it (only people, vehicle, face, dog_cat and other are parsed).
+func keepPackage(current, detect string) string {
+	if !contains(strings.Split(current, ","), "package") {
+		return detect
+	}
+	if detect == "none" {
+		return "package"
+	}
+	return detect + ",package"
 }
 
 // applyMotion: motion detection on/off, sensitivity and area from Protect's

@@ -77,7 +77,7 @@ func (c *Camera) featureFlags() map[string]any {
 		"motionDetect": []string{"enhanced"}, // ChangeSmartMotionSettings
 		// what Reolink's AI detects; lines and loitering are evaluated by the
 		// bridge from the doorbell's boxes (lineCrossing* unlock the line tab)
-		"smartDetect":    []string{"person", "vehicle", "animal", "lineCrossing", "lineCrossingCounting"},
+		"smartDetect":    []string{"person", "vehicle", "animal", "package", "lineCrossing", "lineCrossingCounting"},
 		"videoCodecs":    c.videoCodecs(),
 		"audioCodecs":    []string{"aac"},
 		"audioStyle":     []string{"nature"},

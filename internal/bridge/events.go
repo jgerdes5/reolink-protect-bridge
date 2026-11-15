@@ -23,7 +23,7 @@ type eventSink interface {
 
 // aiObjects maps Reolink AI types to Protect object types, in priority order.
 var aiObjects = []struct{ reolink, protect string }{
-	{"people", "person"}, {"vehicle", "vehicle"}, {"dog_cat", "animal"},
+	{"people", "person"}, {"vehicle", "vehicle"}, {"dog_cat", "animal"}, {"package", "package"},
 }
 
 // staleAfter is the safety net for an event whose end was lost (a dropped

@@ -49,3 +49,20 @@ func TestAlarmState(t *testing.T) {
 	require.Equal(t, []string{"motion", "clear"}, sink.calls)
 	require.False(t, st.motion)
 }
+
+func TestAlarmStatePackage(t *testing.T) {
+	sink := &sinkLog{}
+	ctx := context.Background()
+
+	var st alarmState
+	st.apply(ctx, baichuan.AlarmEvent{AI: []string{"package"}}, sink)
+	st.apply(ctx, baichuan.AlarmEvent{AI: []string{"package", "people"}}, sink) // same event
+	st.apply(ctx, baichuan.AlarmEvent{}, sink)
+	require.Equal(t, []string{"smart package", "smart "}, sink.calls)
+
+	// switched off in Protect: not forwarded
+	sink.calls = nil
+	off := alarmState{enabled: func(o string) bool { return o != "package" }}
+	off.apply(ctx, baichuan.AlarmEvent{AI: []string{"package"}}, sink)
+	require.Empty(t, sink.calls)
+}

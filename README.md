@@ -39,9 +39,10 @@ would likely drain the battery within days.
 - Adopts itself in Protect as a G4 Doorbell
 - Live view and continuous recording in high and low quality, with audio
 - Ring button with push notification and call screen
-- Two-way audio from the Protect app and web interface
-- Motion events and smart detections (person, vehicle, animal) from the
-  doorbell's own AI, with bounding boxes in live view
+- Two-way audio from the Protect app, the web interface and HomeKit
+- Motion events and smart detections (person, vehicle, animal, package) from
+  the doorbell's own AI, with bounding boxes in live view. Package detection is
+  turned on in the Reolink app
 - Detection zones, exclusion zones, line crossing and loitering
 - Privacy masks
 - Protect's camera settings are applied to the doorbell: image, night vision,
@@ -56,11 +57,10 @@ would likely drain the battery within days.
 - One doorbell per bridge, and one bridge per IP address
 - Custom ringtones from Protect aren't supported; the doorbell plays its own
   chime
-- No face recognition, licence plate, package or audio detections
+- No face recognition, licence plate or audio detections
 - Privacy masks are limited to 4 rectangles
 - A few Protect settings have no equivalent on the doorbell and are ignored,
   such as IR LED brightness, microphone volume and status sounds
-- No HomeKit talkback
 - Protect updates can change the camera protocol at any time
 
 ## How it works
