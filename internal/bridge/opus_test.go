@@ -158,3 +158,12 @@ func abs64(v int64) int64 {
 	}
 	return v
 }
+
+func TestLagMeter(t *testing.T) {
+	m := &lagMeter{}
+	for i := 0; i < 100+250; i++ {
+		m.add(80 * time.Millisecond)
+	}
+	require.True(t, m.done)
+	require.Nil(t, m.lags)
+}

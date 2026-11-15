@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -201,6 +202,7 @@ func (o *opusEncoder) run(ctx context.Context, ffmpeg, encoder string) error {
 func (o *opusEncoder) readOgg(r io.Reader) error {
 	var pos uint64 // 48 kHz samples
 	n := 0
+	lag := &lagMeter{}
 	return readOggPackets(bufio.NewReaderSize(r, 64<<10), func(pkt []byte) {
 		n++
 		if n <= 2 { // OpusHead, OpusTags
@@ -210,6 +212,7 @@ func (o *opusEncoder) readOgg(r io.Reader) error {
 		if !ok {
 			at = time.Now()
 		}
+		lag.add(time.Since(at))
 		o.mu.Lock()
 		outs := o.outs
 		o.mu.Unlock()
@@ -218,6 +221,34 @@ func (o *opusEncoder) readOgg(r io.Reader) error {
 		}
 		pos += uint64(opusSamples(pkt))
 	})
+}
+
+// lagMeter logs once how far Opus trails the doorbell's audio (ffmpeg's
+// delay): Protect's live view waits for audio, so a large lag delays it.
+type lagMeter struct {
+	n    int
+	lags []time.Duration
+	done bool
+}
+
+func (m *lagMeter) add(d time.Duration) {
+	if m.done {
+		return
+	}
+	if m.n++; m.n <= 100 { // the first 2 s, while ffmpeg starts
+		return
+	}
+	if m.lags = append(m.lags, d); len(m.lags) < 250 {
+		return
+	}
+	slices.Sort(m.lags)
+	med := m.lags[len(m.lags)/2]
+	ev := log.Info()
+	if med > 300*time.Millisecond {
+		ev = log.Warn()
+	}
+	ev.Msgf("[bridge] Opus audio is %d ms behind the doorbell's audio", med.Milliseconds())
+	m.lags, m.done = nil, true
 }
 
 // readOggPackets splits an Ogg stream into packets (RFC 3533).
