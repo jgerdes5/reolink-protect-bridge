@@ -48,7 +48,7 @@ func TestWithTiming(t *testing.T) {
 // starts with timing info (as withTiming writes it).
 func readTiming(sps []byte) (units, scale uint32, ok bool) {
 	rbsp := unescapeRBSP(sps[1:])
-	pos, ok := vuiFlagPos(rbsp)
+	pos, _, ok := vuiFlagPos(rbsp)
 	if !ok {
 		return 0, 0, false
 	}
@@ -60,6 +60,18 @@ func readTiming(sps []byte) (units, scale uint32, ok bool) {
 		return 0, 0, false
 	}
 	return r.ReadBits(32), r.ReadBits(32), !r.EOF
+}
+
+func TestWriteUE(t *testing.T) {
+	w := bits.NewWriter(nil)
+	for _, v := range []uint32{0, 1, 2, 16, 255} {
+		writeUE(w, v)
+	}
+	w.WriteBits(1, 8) // pad so the reader doesn't run out
+	r := bits.NewReader(w.Bytes())
+	for _, v := range []uint32{0, 1, 2, 16, 255} {
+		require.Equal(t, v, r.ReadUEGolomb())
+	}
 }
 
 func TestRBSPEscape(t *testing.T) {

@@ -4,19 +4,23 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/bits"
 )
 
-// withTiming returns the H.264 SPS with VUI timing info for fps added, or the
-// SPS unchanged when it already has a VUI or can't be parsed.
+// withTiming returns the H.264 SPS with a VUI added, or the SPS unchanged when
+// it already has a VUI or can't be parsed.
 //
 // The Reolink doorbell sends an SPS without VUI, so the stream carries no
 // frame rate, which Protect's live view needs: num_units_in_tick 1,
 // time_scale 2*fps, fixed_frame_rate_flag 0 (night mode lowers the rate).
+// It also says the stream has no reordering (the doorbell sends no
+// B-frames): without bitstream_restriction a decoder may hold a full DPB of
+// frames before showing the first one, which delays live view by up to a
+// second.
 func withTiming(sps []byte, fps int) []byte {
 	if fps <= 0 || len(sps) < 4 {
 		return sps
 	}
 
 	rbsp := unescapeRBSP(sps[1:])
-	pos, ok := vuiFlagPos(rbsp)
+	pos, refs, ok := vuiFlagPos(rbsp)
 	if !ok {
 		return sps
 	}
@@ -42,16 +46,35 @@ func withTiming(sps []byte, fps int) []byte {
 	w.WriteBit(0)                  // nal_hrd_parameters_present_flag
 	w.WriteBit(0)                  // vcl_hrd_parameters_present_flag
 	w.WriteBit(0)                  // pic_struct_present_flag
-	w.WriteBit(0)                  // bitstream_restriction_flag
+	w.WriteBit(1)                  // bitstream_restriction_flag
+	w.WriteBit(1)                  // motion_vectors_over_pic_boundaries_flag
+	writeUE(w, 2)                  // max_bytes_per_pic_denom (default)
+	writeUE(w, 1)                  // max_bits_per_mb_denom (default)
+	writeUE(w, 16)                 // log2_max_mv_length_horizontal (default)
+	writeUE(w, 16)                 // log2_max_mv_length_vertical (default)
+	writeUE(w, 0)                  // max_num_reorder_frames
+	writeUE(w, max(refs, 1))       // max_dec_frame_buffering
 
 	w.WriteBit(1) // rbsp_stop_one_bit; the rest of the byte is already zero
 
 	return append([]byte{sps[0]}, escapeRBSP(w.Bytes())...)
 }
 
+// writeUE writes v as an unsigned Exp-Golomb code.
+func writeUE(w *bits.Writer, v uint32) {
+	v++
+	n := byte(0)
+	for x := v; x > 1; x >>= 1 {
+		n++
+	}
+	w.WriteBits(0, n)
+	w.WriteBits(v, n+1)
+}
+
 // vuiFlagPos parses an SPS RBSP (without the NAL header byte) up to
-// vui_parameters_present_flag and returns that flag's bit position.
-func vuiFlagPos(b []byte) (int, bool) {
+// vui_parameters_present_flag and returns that flag's bit position and
+// max_num_ref_frames.
+func vuiFlagPos(b []byte) (int, uint32, bool) {
 	r := bits.NewReader(b)
 
 	profile := r.ReadByte()
@@ -104,17 +127,17 @@ func vuiFlagPos(b []byte) (int, bool) {
 		_ = r.ReadSEGolomb()
 		n := r.ReadUEGolomb()
 		if n > 255 {
-			return 0, false
+			return 0, 0, false
 		}
 		for i := uint32(0); i < n; i++ {
 			_ = r.ReadSEGolomb()
 		}
 	}
-	_ = r.ReadUEGolomb()  // max_num_ref_frames
-	_ = r.ReadBit()       // gaps_in_frame_num_value_allowed_flag
-	_ = r.ReadUEGolomb()  // pic_width_in_mbs_minus1
-	_ = r.ReadUEGolomb()  // pic_height_in_map_units_minus1
-	if r.ReadBit() == 0 { // frame_mbs_only_flag
+	refs := r.ReadUEGolomb() // max_num_ref_frames
+	_ = r.ReadBit()          // gaps_in_frame_num_value_allowed_flag
+	_ = r.ReadUEGolomb()     // pic_width_in_mbs_minus1
+	_ = r.ReadUEGolomb()     // pic_height_in_map_units_minus1
+	if r.ReadBit() == 0 {    // frame_mbs_only_flag
 		_ = r.ReadBit() // mb_adaptive_frame_field_flag
 	}
 	_ = r.ReadBit()       // direct_8x8_inference_flag
@@ -125,10 +148,10 @@ func vuiFlagPos(b []byte) (int, bool) {
 	}
 
 	if r.EOF {
-		return 0, false
+		return 0, 0, false
 	}
 	idx, left := r.Pos() // index of the current byte, bits of it not yet read
-	return (idx+1)*8 - int(left), true
+	return (idx+1)*8 - int(left), refs, true
 }
 
 // unescapeRBSP removes emulation prevention bytes (00 00 03 -> 00 00).
