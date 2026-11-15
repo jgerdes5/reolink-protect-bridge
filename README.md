@@ -74,8 +74,9 @@ Reolink doorbell ◀── Baichuan ──▶ Reolink Protect Bridge ◀── U
 
 Video and the doorbell's AAC audio are passed through without re-encoding, so
 the bridge runs fine on small hardware. ffmpeg handles the rest: an Opus copy
-of the audio, which Protect's live view expects from UniFi cameras, decoding
-talkback audio for the doorbell, and snapshots.
+of the audio, which lets Protect's web player use WebRTC like it does for
+UniFi cameras, decoding talkback audio (AAC, or Opus from HomeKit) for the
+doorbell, and snapshots.
 
 The bridge opens all connections to the console itself. The only traffic
 Protect starts on its own is talkback audio.
@@ -128,7 +129,8 @@ sudo sh install.sh
 ```
 
 On Debian and Ubuntu the script installs ffmpeg itself; on other distributions,
-install ffmpeg and curl with your package manager first. Running the script
+install ffmpeg (with Opus support, e.g. libopus) and curl with your package
+manager first. Running the script
 again updates to the latest release. For Proxmox there's a step-by-step guide in
 [deploy/proxmox.md](deploy/proxmox.md). Prebuilt binaries are attached to each
 [release](https://github.com/jgerdes5/reolink-protect-bridge/releases).
@@ -178,12 +180,17 @@ and looks for the console with a UDP broadcast on port 10001.
 - **The camera doesn't show up in Protect.** Check the log on the
   **Status** page. `HTTP 401/403` on login means the user is wrong, uses SSO
   or 2FA, or lacks Protect access.
-- **"The console's certificate changed".** If you replaced the certificate,
+- **"The console's certificate changed"** (or the certificate of Protect's
+  camera connection). If you replaced the certificate or reset the console,
   trust the new one on the **Connections** page. Otherwise something on your
   network may be impersonating the console.
 - **Recordings have gaps.** Make sure the host's clock is synced over NTP.
 - **No talkback.** Check that UDP 7004 from the console to the bridge isn't
   blocked.
+- **The Status page shows "Audio: AAC only".** The ffmpeg in use has no Opus
+  encoder. Install an ffmpeg with libopus or point the bridge to one under
+  **Options → Advanced**. Without Opus, live view goes black briefly when you
+  switch quality and HomeKit talkback doesn't work.
 - **Rings show up in the log but not in Protect.** Set the ring method to
   "Protect API" under **Options**.
 
