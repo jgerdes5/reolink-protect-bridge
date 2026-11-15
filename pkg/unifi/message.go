@@ -87,9 +87,11 @@ func (c *Camera) featureFlags() map[string]any {
 		"hdr":            true, // HDR selector -> Reolink hdrSwitch
 		"truedaynight":   true, // night vision block -> day/night mode and IR LEDs
 		"ledStatus":      true, // status light -> doorbell button light; PATCH ledSettings fails without it
-		// privacy zones -> the doorbell's masks: at most 4 rectangles (Shelter)
+		// privacy zones -> the doorbell's masks (Shelter): at most 4, each
+		// turned into its bounding rectangle. Not rectangleOnly: Protect 7.3's
+		// web UI hides the privacy section for such cameras (real G4s send false).
 		"privacyMask":          true,
-		"privacyMasks":         map[string]any{"maxZones": 4, "rectangleOnly": true},
+		"privacyMasks":         map[string]any{"maxZones": 4, "rectangleOnly": false},
 		"squareEventThumbnail": true,
 		"maxScaleDownLevel":    2,
 		"downScaleResolutions": [][]int{{3840, 2160}, {2688, 1512}, {1920, 1080}},
