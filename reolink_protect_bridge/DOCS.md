@@ -5,6 +5,10 @@ live view, recording, ring, talkback and smart detections. See the
 [project README](https://github.com/jgerdes5/reolink-protect-bridge) for
 details.
 
+Tested with the Reolink Video Doorbell WiFi. The PoE model should work too.
+Battery doorbells running on battery are not supported, since they sleep
+between events.
+
 ## Setup
 
 1. Start the add-on and open **Reolink Protect** in the sidebar.

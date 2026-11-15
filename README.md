@@ -8,9 +8,22 @@ live view, recording, ring notifications, talkback and smart detections all
 work in the Protect app, without ONVIF or a third-party camera entry.
 
 > [!NOTE]
-> This is an early release, tested with the Reolink Video Doorbell WiFi and
-> UniFi Protect 7.3. Reports from other models and Protect versions are
+> This is an early release, only tested with the Reolink Video Doorbell WiFi
+> and UniFi Protect 7.3. Reports from other models and Protect versions are
 > welcome.
+
+## Supported doorbells
+
+| Doorbell | Status |
+|----------|--------|
+| Reolink Video Doorbell WiFi | Tested |
+| Reolink Video Doorbell PoE | Should work, untested. Same camera and features as the WiFi model, only the network connection differs |
+| Reolink Video Doorbell (Battery), 2nd Gen, in Wired Power Mode | Might work, untested. In this mode it runs like a plugged-in camera with continuous recording |
+| Battery doorbells running on battery | Not supported |
+
+Protect expects a camera to stream around the clock. A battery doorbell sleeps
+between events to save power, and keeping it streaming would drain the battery
+within days.
 
 ## Features
 
@@ -59,7 +72,8 @@ Protect starts on its own is talkback audio.
 
 ## Requirements
 
-- A Reolink video doorbell
+- A Reolink video doorbell with continuous power (see
+  [Supported doorbells](#supported-doorbells))
 - UniFi Protect 7 on a UniFi console (Dream Machine, Cloud Key, UNVR, ...)
 - An always-on host on the same network with a **fixed IP address**. Protect
   remembers the camera by this address.
