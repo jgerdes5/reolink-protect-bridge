@@ -301,3 +301,25 @@ func TestSettingsDebounce(t *testing.T) {
 	require.NotZero(t, first, "never flushed while changes kept coming")
 	require.Less(t, first, settleMax+200*time.Millisecond)
 }
+
+func TestLastKeyframe(t *testing.T) {
+	var k lastKeyframe
+	_, _, ok := k.get(time.Second)
+	require.False(t, ok)
+
+	k.setCodec("H264")
+	_, _ = k.Write([]byte{1, 2, 3})
+	frame, codec, ok := k.get(time.Second)
+	require.True(t, ok)
+	require.Equal(t, []byte{1, 2, 3}, frame)
+	require.Equal(t, "H264", codec)
+
+	frame[0] = 9 // a copy
+	_, _ = k.Write([]byte{4})
+	frame, _, _ = k.get(time.Second)
+	require.Equal(t, []byte{4}, frame)
+
+	k.at = time.Now().Add(-3 * time.Second)
+	_, _, ok = k.get(2 * time.Second)
+	require.False(t, ok)
+}

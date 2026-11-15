@@ -106,6 +106,7 @@ type Bridge struct {
 	snap     []byte
 	snapErr  error
 	snapTime time.Time
+	lastKey  lastKeyframe // the main stream's latest keyframe, for quick snapshots
 }
 
 type streamInfo struct {
@@ -263,6 +264,11 @@ func (b *Bridge) Run(ctx context.Context) {
 	defer b.teardown()
 	go b.main.Run(ctx)
 	go b.sub.Run(ctx)
+	b.wg.Add(1)
+	go func() {
+		defer b.wg.Done()
+		b.keepKeyframe(ctx)
+	}()
 
 	// Protect caches resolution and capabilities at adoption: learn them first.
 	b.probe(ctx)
@@ -826,6 +832,12 @@ func (b *Bridge) captureSnapshot(ctx context.Context) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	// The latest keyframe saves waiting up to a keyframe interval: Protect's
+	// live view shows the snapshot as the poster while a stream starts.
+	if frame, codec, ok := b.lastKey.get(2 * time.Second); ok {
+		return b.encodeSnapshot(ctx, frame, codec)
+	}
+
 	cons := magic.NewKeyframe()
 	if err := b.main.AddConsumer(ctx, cons); err != nil {
 		return nil, err
@@ -849,15 +861,78 @@ func (b *Bridge) captureSnapshot(ctx context.Context) ([]byte, error) {
 	if len(frame) == 0 {
 		return nil, errors.New("no keyframe")
 	}
-	switch cons.CodecName() {
-	case core.CodecJPEG:
+	return b.encodeSnapshot(ctx, frame, cons.CodecName())
+}
+
+// encodeSnapshot turns a keyframe into a JPEG.
+func (b *Bridge) encodeSnapshot(ctx context.Context, frame []byte, codec string) ([]byte, error) {
+	if codec == core.CodecJPEG {
 		return mjpeg.FixJPEG(frame), nil
 	}
-
 	cmd := exec.CommandContext(ctx, b.opts.FFmpeg, "-hide_banner", "-loglevel", "error",
 		"-i", "-", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "3", "-f", "mjpeg", "-")
 	cmd.Stdin = bytes.NewReader(frame)
 	return cmd.Output()
+}
+
+// lastKeyframe holds the newest keyframe of a stream (the magic.Keyframe
+// consumer writes each one in a single Write).
+type lastKeyframe struct {
+	mu    sync.Mutex
+	frame []byte
+	codec string
+	at    time.Time
+}
+
+func (k *lastKeyframe) Write(p []byte) (int, error) {
+	k.mu.Lock()
+	k.frame = append(k.frame[:0], p...)
+	k.at = time.Now()
+	k.mu.Unlock()
+	return len(p), nil
+}
+
+func (k *lastKeyframe) setCodec(codec string) {
+	k.mu.Lock()
+	k.codec, k.frame, k.at = codec, k.frame[:0], time.Time{}
+	k.mu.Unlock()
+}
+
+// get returns a copy of the keyframe if it is newer than maxAge.
+func (k *lastKeyframe) get(maxAge time.Duration) ([]byte, string, bool) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if len(k.frame) == 0 || time.Since(k.at) > maxAge {
+		return nil, "", false
+	}
+	return append([]byte(nil), k.frame...), k.codec, true
+}
+
+// keepKeyframe keeps lastKey filled from the main stream until ctx ends.
+func (b *Bridge) keepKeyframe(ctx context.Context) {
+	for ctx.Err() == nil {
+		cons := magic.NewKeyframe()
+		if err := b.main.AddConsumer(ctx, cons); err != nil {
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+			}
+			continue
+		}
+		b.lastKey.setCodec(cons.CodecName())
+		stop := context.AfterFunc(ctx, func() {
+			b.main.RemoveConsumer(cons)
+			_ = cons.Stop()
+		})
+		_, _ = cons.WriteTo(&b.lastKey)
+		stop()
+		b.main.RemoveConsumer(cons)
+		_ = cons.Stop()
+		select { // the stream ended: don't spin while it reconnects
+		case <-ctx.Done():
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 // onBoxes passes the doorbell's AI boxes, with zone and line results, to
