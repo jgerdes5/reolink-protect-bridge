@@ -235,6 +235,12 @@ func TestFeatureFlags(t *testing.T) {
 	cam.SetPackage(true)
 	require.Contains(t, cam.featureFlags()["smartDetect"], "package")
 
+	require.Equal(t, []string{"aac"}, f["audioCodecs"])
+	require.NotContains(t, f, "opusSampleRates")
+	cam.SetOpus(true)
+	require.Equal(t, []string{"aac", "opus"}, cam.featureFlags()["audioCodecs"])
+	require.Equal(t, []int{16000}, cam.featureFlags()["opusSampleRates"])
+
 	cam.Talk = func([]byte) {}
 	require.Equal(t, true, cam.featureFlags()["speaker"])
 

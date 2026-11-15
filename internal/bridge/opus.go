@@ -393,6 +393,24 @@ func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consu
 	}, nil
 }
 
+// checkOpus tells Protect whether the camera sends Opus, which ffmpeg can only
+// do with an Opus encoder.
+func (b *Bridge) checkOpus() {
+	b.omu.Lock()
+	defer b.omu.Unlock()
+	if b.opusEnc == "" && b.opusErr == nil {
+		if enc, err := opusCodec(b.opts.FFmpeg); err != nil {
+			b.opusErr = err
+			log.Info().Err(err).Msg("[bridge] no Opus audio for Protect")
+		} else {
+			b.opusEnc = enc
+		}
+	}
+	if b.proto != nil {
+		b.proto.SetOpus(b.opusErr == nil)
+	}
+}
+
 // opusErrSnapshot is the permanent "no Opus encoder" error, already logged.
 func (b *Bridge) opusErrSnapshot() error {
 	b.omu.Lock()

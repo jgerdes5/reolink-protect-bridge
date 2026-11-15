@@ -94,6 +94,7 @@ type Camera struct {
 
 	hdr           bool // HDR as Protect last set it
 	pkg           atomic.Bool
+	opus          atomic.Bool
 	settingsOnce  sync.Once
 	settingsQueue chan func()
 }
@@ -582,6 +583,11 @@ func (c *Camera) stopChannel(name string) {
 // SetHDR tells the camera the HDR state the image sensor has, before Run:
 // Protect asks for it after connecting and only switches (and waits for a
 // stream restart) when it differs from what it wants.
+// SetOpus says the camera sends Opus next to AAC (read at the next hello).
+// Protect's web player then uses WebRTC, which switches quality without a
+// black frame; with AAC only it falls back to an MSE player.
+func (c *Camera) SetOpus(on bool) { c.opus.Store(on) }
+
 // SetPackage offers package detection to Protect (read at the next hello);
 // only some doorbells have it.
 func (c *Camera) SetPackage(on bool) { c.pkg.Store(on) }

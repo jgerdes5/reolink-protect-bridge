@@ -77,7 +77,7 @@ func (c *Camera) featureFlags() map[string]any {
 		"motionDetect":   []string{"enhanced"}, // ChangeSmartMotionSettings
 		"smartDetect":    c.smartDetect(),
 		"videoCodecs":    c.videoCodecs(),
-		"audioCodecs":    []string{"aac"},
+		"audioCodecs":    c.audioCodecs(),
 		"audioStyle":     []string{"nature"},
 		"horizontalFlip": true, // mirror
 		"verticalFlip":   true, // flip
@@ -104,7 +104,17 @@ func (c *Camera) featureFlags() map[string]any {
 	if c.Talk != nil {
 		flags["speaker"] = true // hasSpeaker: talkback
 	}
+	if c.opus.Load() {
+		flags["opusSampleRates"] = []int{16000} // what the bridge encodes
+	}
 	return flags
+}
+
+func (c *Camera) audioCodecs() []string {
+	if c.opus.Load() {
+		return []string{"aac", "opus"}
+	}
+	return []string{"aac"}
 }
 
 // smartDetect is what the doorbell's AI detects; lines and loitering are

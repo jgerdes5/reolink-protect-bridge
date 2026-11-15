@@ -283,6 +283,7 @@ func (b *Bridge) Run(ctx context.Context) {
 		}()
 	}
 	b.loadEncoder(ctx)
+	b.checkOpus()
 	b.proto.Run(ctx)
 }
 
