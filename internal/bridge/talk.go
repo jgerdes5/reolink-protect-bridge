@@ -77,7 +77,21 @@ func (t *talker) push(p talkPkt) {
 func (t *talker) run(ch chan talkPkt, quit chan struct{}) {
 	defer t.wg.Done()
 	var next *talkPkt
+	var opened time.Time
 	for {
+		// at most one new session a second: each one opens the doorbell's
+		// talk channel and starts ffmpeg
+		if wait := time.Second - time.Since(opened); wait > 0 {
+			select {
+			case <-quit:
+				t.mu.Lock()
+				t.ch = nil
+				t.mu.Unlock()
+				return
+			case <-time.After(wait):
+			}
+		}
+		opened = time.Now()
 		next = t.session(ch, quit, next)
 
 		t.mu.Lock()

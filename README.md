@@ -151,9 +151,10 @@ needs for quick live view. Everything else on the doorbell is only changed when
 
 ### Console certificate
 
-The console's certificate is trusted on first use, and the Protect password is
-only sent to a console with the same key afterwards. If you replace the
-console's certificate, trust the new one on the **Connections** page.
+The console's certificates are trusted on first use: the Protect password and
+the camera connection then only go to a console with the same keys. If you
+replace the console's certificate or reset the console, trust the new one on
+the **Connections** page.
 
 ### Privacy mode
 

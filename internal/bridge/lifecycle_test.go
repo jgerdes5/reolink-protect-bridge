@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"net/url"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -322,4 +323,18 @@ func TestLastKeyframe(t *testing.T) {
 	k.at = time.Now().Add(-3 * time.Second)
 	_, _, ok = k.get(2 * time.Second)
 	require.False(t, ok)
+}
+
+func TestReolinkURL(t *testing.T) {
+	b := &Bridge{opts: Options{Doorbell: Doorbell{Host: "fd00::10", Username: "admin", Password: "p"}}}
+	u, err := url.Parse(b.reolinkURL("main"))
+	require.NoError(t, err)
+	require.Equal(t, "fd00::10", u.Hostname())
+	require.Equal(t, "9000", u.Port())
+
+	b.opts.Doorbell = Doorbell{Host: "192.0.2.5", Port: 9001, Channel: 2}
+	u, err = url.Parse(b.reolinkURL("sub"))
+	require.NoError(t, err)
+	require.Equal(t, "192.0.2.5:9001", u.Host)
+	require.Equal(t, "channel=2", u.RawQuery)
 }

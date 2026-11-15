@@ -118,14 +118,24 @@ func (s *Source) Run(ctx context.Context) {
 // attach makes prod the current producer: existing consumer tracks move over
 // to its tracks, and backchannel tracks are added to it.
 func (s *Source) attach(prod Producer) {
+	var stale []core.Consumer
+	defer func() {
+		// outside s.mu: a consumer's Stop may call RemoveConsumer
+		for _, c := range stale {
+			_ = c.Stop()
+		}
+	}()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	used := map[*fanout]bool{}
+	kinds := map[string]bool{}
 	for _, media := range prod.GetMedias() {
 		if media.Direction != core.DirectionRecvonly || len(media.Codecs) == 0 {
 			continue
 		}
 		codec := media.Codecs[0]
+		kinds[media.Kind] = true
 		var f *fanout
 		for _, t := range s.tracks {
 			if t.media.Kind == media.Kind && media.MatchCodec(t.codec) != nil {
@@ -137,6 +147,7 @@ func (s *Source) attach(prod Producer) {
 			f = &fanout{}
 			s.tracks = append(s.tracks, f)
 		}
+		used[f] = true
 		f.media, f.codec = media, codec
 		track, err := prod.GetTrack(media, codec)
 		if err != nil {
@@ -146,6 +157,24 @@ func (s *Source) attach(prod Producer) {
 		sender.Handler = f.write
 		sender.HandleRTP(track)
 	}
+	// A track whose codec the new producer no longer has (the doorbell was
+	// switched to another codec) would never be fed again: its consumers are
+	// stopped, so they start over on the new track.
+	tracks := s.tracks[:0]
+	for _, f := range s.tracks {
+		if used[f] || !kinds[f.media.Kind] {
+			tracks = append(tracks, f)
+			continue
+		}
+		f.mu.Lock()
+		for _, o := range f.outs {
+			stale = append(stale, o.cons)
+		}
+		f.outs = nil
+		f.mu.Unlock()
+	}
+	s.tracks = tracks
+
 	for _, b := range s.backs {
 		if media, codec := sendFor(prod, b.track.Codec); media != nil {
 			if err := prod.AddTrack(media, codec, b.track); err != nil {

@@ -175,3 +175,42 @@ func TestAddConsumerRollback(t *testing.T) {
 		f.mu.Unlock()
 	}
 }
+
+type stopRecorder struct {
+	*recorder
+	stopped atomic.Bool
+}
+
+func (r *stopRecorder) Stop() error { r.stopped.Store(true); return r.recorder.Stop() }
+
+// After a reconnect with another video codec the old track gets no packets
+// any more: its consumers are stopped so they can start over.
+func TestSourceCodecChange(t *testing.T) {
+	var n atomic.Int32
+	var mu sync.Mutex
+	var prods []*fakeProducer
+	src := New("main", func() (Producer, error) {
+		p := newFakeProducer()
+		if n.Add(1) > 1 {
+			p.Medias[0].Codecs = []*core.Codec{{Name: core.CodecH265, ClockRate: 90000}}
+		}
+		mu.Lock()
+		prods = append(prods, p)
+		mu.Unlock()
+		return p, nil
+	}, zerolog.Nop())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go src.Run(ctx)
+
+	rec := &stopRecorder{recorder: newRecorder()}
+	addCtx, addCancel := context.WithTimeout(ctx, time.Second)
+	defer addCancel()
+	require.NoError(t, src.AddConsumer(addCtx, rec))
+
+	mu.Lock()
+	first := prods[0]
+	mu.Unlock()
+	_ = first.Stop()
+	require.Eventually(t, rec.stopped.Load, 3*time.Second, 5*time.Millisecond)
+}

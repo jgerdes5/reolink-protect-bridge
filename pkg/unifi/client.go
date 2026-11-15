@@ -37,6 +37,13 @@ type Camera struct {
 	HasAudio bool
 	Identity Identity
 	Cert     tls.Certificate
+	// CertPin is the key (SHA-256 hex) of the certificate Protect presents on
+	// the camera connection; empty means learn it on the first connection and
+	// report it through OnPin. Protect's own self-signed certificate there is
+	// not the console's web certificate, so it has its own pin.
+	CertPin string
+	OnPin   func(pin string)
+	pinMu   sync.Mutex
 
 	// Token returns the adoption token. It is called before every connection
 	// attempt with fresh=false, and with fresh=true after Protect refused one.
@@ -214,7 +221,8 @@ func (c *Camera) session(ctx context.Context, freshToken bool) (connected bool, 
 	dialer := websocket.Dialer{
 		TLSClientConfig: &tls.Config{
 			Certificates:       []tls.Certificate{c.Cert},
-			InsecureSkipVerify: true, // Protect presents a self-signed certificate
+			InsecureSkipVerify: true, // self-signed: checked against the pin instead
+			VerifyConnection:   c.verifyPin,
 		},
 		Subprotocols:     []string{"secure_transfer"},
 		HandshakeTimeout: 15 * time.Second,
@@ -357,7 +365,11 @@ func (c *Camera) handle(ctx context.Context, msg *Message) error {
 	fn := msg.FunctionName
 	c.Log.Debug().Msgf("[unifi] %s: recv %s", c.Name, fn)
 	if e := c.Log.Trace(); e.Enabled() {
-		e.Msgf("[unifi] %s: recv %s %s", c.Name, fn, c.redact(string(msg.Payload)))
+		payload := c.redact(string(msg.Payload))
+		if fn == "UpdateUsernamePassword" { // the camera credentials Protect assigns
+			payload = "(hidden)"
+		}
+		e.Msgf("[unifi] %s: recv %s %s", c.Name, fn, payload)
 	}
 
 	if !msg.ResponseExpected && !alwaysHandled[fn] {
@@ -680,6 +692,9 @@ func (c *Camera) uploadSnapshot(ctx context.Context, uri string, fields map[stri
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	if err := c.checkUploadURI(uri); err != nil {
+		return err
+	}
 	if jpeg == nil {
 		var err error
 		if jpeg, err = c.Snapshot(ctx); err != nil {
@@ -737,6 +752,58 @@ func (c *Camera) uploadClient() *http.Client {
 		}}
 	})
 	return c.http
+}
+
+// verifyPin checks the camera connection's certificate against CertPin
+// (trust on first use, like ProtectClient.verify).
+func (c *Camera) verifyPin(cs tls.ConnectionState) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("console sent no certificate")
+	}
+	pin := CertPinOf(cs.PeerCertificates[0])
+	c.pinMu.Lock()
+	want := c.CertPin
+	if want == "" {
+		c.CertPin = pin
+	}
+	onPin := c.OnPin
+	c.pinMu.Unlock()
+	switch {
+	case want == "":
+		if onPin != nil {
+			onPin(pin)
+		}
+	case want != pin:
+		return &PinError{Got: pin, Want: want, Camera: true}
+	}
+	return nil
+}
+
+// checkUploadURI allows snapshot uploads only to the console: the URI comes
+// from Protect, and the bridge must not POST to anything else on the network.
+func (c *Camera) checkUploadURI(uri string) error {
+	u, err := url.Parse(uri)
+	if err != nil || u.Scheme != "https" {
+		return fmt.Errorf("snapshot upload to %q refused: not an https URL", uri)
+	}
+	host := hostOnly(c.Host)
+	if strings.EqualFold(u.Hostname(), host) {
+		return nil
+	}
+	want, err := net.LookupHost(host)
+	if err != nil {
+		return fmt.Errorf("snapshot upload: can't resolve the console address: %w", err)
+	}
+	got := u.Hostname()
+	if ip := net.ParseIP(got); ip != nil {
+		got = ip.String()
+	}
+	for _, a := range want {
+		if ip := net.ParseIP(a); ip != nil && ip.String() == got {
+			return nil
+		}
+	}
+	return fmt.Errorf("snapshot upload to %s refused: not the console", u.Hostname())
 }
 
 // redact hides the adoption/auth token in trace logs. Not with c.mu held.
@@ -838,4 +905,12 @@ func (c *Camera) uptime() time.Duration {
 func isEmptyPayload(p json.RawMessage) bool {
 	s := strings.TrimSpace(string(p))
 	return s == "" || s == "{}" || s == "null"
+}
+
+// hostOnly drops a port from "host:port" or "[v6]:port".
+func hostOnly(h string) string {
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	return strings.Trim(h, "[]")
 }

@@ -48,6 +48,7 @@ type settings struct {
 	timer    *time.Timer
 	first    time.Time     // first change since the last flush (settleMax)
 	retry    time.Duration // current backoff after a failed dial, 0 = none
+	failures int           // flushes in a row whose writes failed
 	closed   bool
 	enabled  map[string]bool // Protect object types with smart detection on; nil = all
 
@@ -385,10 +386,31 @@ func (s *settings) flush() {
 	}
 	if ok {
 		s.keepClient()
-	} else {
-		s.dropClient()
+		s.mu.Lock()
+		s.failures = 0
+		s.mu.Unlock()
+		return
 	}
+	s.dropClient()
+	if ctx.Err() != nil {
+		return
+	}
+	// a write failed (timeout, flaky WiFi): try the values again later, but
+	// not forever if the doorbell keeps rejecting one
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.failures++; s.failures > maxSettingsFailures {
+		s.failures = 0
+		log.Warn().Msg("[settings] giving up on the settings that failed; they are applied when Protect sends them again")
+		return
+	}
+	s.putBack(p)
+	s.retry = min(max(2*s.retry, 5*time.Second), settingsRetry)
+	s.arm(s.retry)
 }
+
+// maxSettingsFailures is how often a flush whose writes failed is retried.
+const maxSettingsFailures = 3
 
 // applyAll writes one flush's values; it returns false if any group failed.
 // quiet suppresses the warnings (a retry follows).
@@ -679,7 +701,7 @@ func motionChange(m *unifi.Motion) func(*baichuan.Node) bool {
 		if w <= 0 || w > cols || h <= 0 || h > rows {
 			w, h = cols, rows
 		}
-		if len(zones) > 0 && cols > 0 && rows > 0 && b.Set("MD/scope/valueTable", baichuan.EncodeArea(rasterizeIn(zones, w, h, cols, rows), cols, rows)) {
+		if len(zones) > 0 && validGrid(cols, rows) && b.Set("MD/scope/valueTable", baichuan.EncodeArea(rasterizeIn(zones, w, h, cols, rows), cols, rows)) {
 			changed = true
 		}
 		return changed
@@ -756,6 +778,14 @@ func mdSensitivity(s int) int {
 	return 51 - ui
 }
 
+// maxGrid bounds the detection grid a doorbell reports (the D340W: 96x64),
+// so a bogus reply can't make the bridge allocate gigabytes.
+const maxGrid = 256
+
+func validGrid(cols, rows int) bool {
+	return cols > 0 && rows > 0 && cols <= maxGrid && rows <= maxGrid
+}
+
 // rasterize marks the grid cells whose centre lies in any of the zones
 // (Protect polygons in 0-1000).
 func rasterize(zones []unifi.Zone, cols, rows int) []bool {
@@ -828,7 +858,7 @@ func aiAreaChange(zones, exclude []unifi.Zone, sens int) func(*baichuan.Node) bo
 		}
 		cols, _ := strconv.Atoi(b.Value("AiDetectCfg/width"))
 		rows, _ := strconv.Atoi(b.Value("AiDetectCfg/height"))
-		if cols <= 0 || rows <= 0 {
+		if !validGrid(cols, rows) {
 			return changed
 		}
 		cells := rasterize(zones, cols, rows)

@@ -371,3 +371,10 @@ func TestKeepPackage(t *testing.T) {
 	require.Equal(t, "package", keepPackage("package", "none"))
 	require.Equal(t, "none", keepPackage("", "none"))
 }
+
+func TestValidGrid(t *testing.T) {
+	require.True(t, validGrid(96, 64))
+	require.False(t, validGrid(0, 64))
+	require.False(t, validGrid(50000, 50000))
+	require.False(t, validGrid(1<<20, 1))
+}

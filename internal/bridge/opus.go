@@ -27,7 +27,7 @@ type opusEncoder struct {
 	adts *aac.Consumer
 
 	mu   sync.Mutex
-	outs []*unifi.Consumer
+	outs []*opusOut
 	// arrivals of the AAC frames written to ffmpeg, to stamp each Opus packet
 	// with the time its sound arrived (ffmpeg delays it)
 	frames []aacFrame
@@ -66,22 +66,56 @@ func (o *opusEncoder) Stop() error {
 	return o.Connection.Stop()
 }
 
+// opusOut feeds one channel from its own queue, so a slow Protect socket
+// only delays (and, when full, drops) its own Opus, not the other channels'.
+type opusOut struct {
+	c  *unifi.Consumer
+	ch chan opusPacket
+}
+
+type opusPacket struct {
+	data []byte
+	pos  uint32
+	at   time.Time
+}
+
+const opusQueue = 50 // packets: 1 s
+
 func (o *opusEncoder) join(c *unifi.Consumer) {
+	out := &opusOut{c: c, ch: make(chan opusPacket, opusQueue)}
+	go func() {
+		for p := range out.ch {
+			c.WriteOpus(p.data, p.pos, p.at)
+		}
+	}()
 	o.mu.Lock()
-	o.outs = append(o.outs, c)
+	o.outs = append(o.outs, out)
 	o.mu.Unlock()
 }
 
 func (o *opusEncoder) leave(c *unifi.Consumer) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	outs := make([]*unifi.Consumer, 0, len(o.outs))
+	outs := make([]*opusOut, 0, len(o.outs))
 	for _, x := range o.outs {
-		if x != c {
+		if x.c == c {
+			close(x.ch)
+		} else {
 			outs = append(outs, x)
 		}
 	}
-	o.outs = outs // readOgg iterates the old slice without the lock
+	o.outs = outs
+}
+
+func (o *opusEncoder) deliver(p opusPacket) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for _, out := range o.outs {
+		select {
+		case out.ch <- p:
+		default: // that channel is stuck: drop rather than hold up the others
+		}
+	}
 }
 
 // adtsWriter notes when each AAC frame arrived on its way to ffmpeg.
@@ -149,9 +183,11 @@ func opusArgs(encoder string) []string {
 
 // opusCodec picks ffmpeg's Opus encoder: libopus, else the built-in one.
 func opusCodec(ffmpeg string) (string, error) {
-	out, err := exec.Command(ffmpeg, "-hide_banner", "-encoders").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-encoders").Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("ffmpeg -encoders: %w", err)
 	}
 	switch s := string(out); {
 	case strings.Contains(s, " libopus "):
@@ -159,8 +195,44 @@ func opusCodec(ffmpeg string) (string, error) {
 	case strings.Contains(s, " opus "):
 		return "opus", nil
 	}
-	return "", errors.New("ffmpeg has no Opus encoder")
+	return "", errNoOpusEncoder
 }
+
+// errNoOpusEncoder is the only answer that is kept: other failures (ffmpeg
+// briefly missing during an upgrade) are asked again next time.
+var errNoOpusEncoder = errors.New("ffmpeg has no Opus encoder")
+
+// opusEncoderName returns ffmpeg's Opus encoder, asking ffmpeg once. Must be
+// called with b.omu held.
+func (b *Bridge) opusEncoderName() (string, error) {
+	if b.opusErr != nil || b.opusEnc != "" {
+		return b.opusEnc, b.opusErr
+	}
+	enc, err := opusCodec(b.opts.FFmpeg)
+	switch {
+	case errors.Is(err, errNoOpusEncoder):
+		b.opusErr = err
+		log.Info().Err(err).Msg("[bridge] no Opus audio for Protect")
+	case err != nil:
+		log.Warn().Err(err).Msg("[bridge] can't check ffmpeg's Opus encoder, trying again later")
+	default:
+		b.opusEnc = enc
+	}
+	st := opusStatus{}
+	switch {
+	case b.opusErr != nil:
+		st = opusStatus{state: "off", err: b.opusErr.Error()}
+	case b.opusEnc != "":
+		st = opusStatus{state: "on"}
+	}
+	b.opusState.Store(&st)
+	if b.proto != nil && enc != "" {
+		b.proto.SetOpus(true) // read by Protect at the next connection
+	}
+	return enc, err
+}
+
+type opusStatus struct{ state, err string }
 
 // run starts ffmpeg; it runs until ctx ends or ffmpeg exits (done closes).
 func (o *opusEncoder) run(ctx context.Context, ffmpeg, encoder string) error {
@@ -213,12 +285,7 @@ func (o *opusEncoder) readOgg(r io.Reader) error {
 			at = time.Now()
 		}
 		lag.add(time.Since(at))
-		o.mu.Lock()
-		outs := o.outs
-		o.mu.Unlock()
-		for _, c := range outs {
-			c.WriteOpus(pkt, uint32(pos), at)
-		}
+		o.deliver(opusPacket{data: pkt, pos: uint32(pos), at: at})
 		pos += uint64(opusSamples(pkt))
 	})
 }
@@ -331,17 +398,9 @@ type sharedOpus struct {
 func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consumer) (func(), error) {
 	b.omu.Lock()
 	defer b.omu.Unlock()
-	if b.opusErr != nil {
-		return nil, b.opusErr
-	}
-	if b.opusEnc == "" {
-		enc, err := opusCodec(b.opts.FFmpeg)
-		if err != nil {
-			b.opusErr = err
-			log.Info().Err(err).Msg("[bridge] no Opus audio for Protect")
-			return nil, err
-		}
-		b.opusEnc = enc
+	encoder, err := b.opusEncoderName()
+	if err != nil {
+		return nil, err
 	}
 	if b.opus == nil {
 		b.opus = map[string]*sharedOpus{}
@@ -366,7 +425,7 @@ func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consu
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
 		enc.cancel = cancel
-		if err := enc.run(runCtx, b.opts.FFmpeg, b.opusEnc); err != nil {
+		if err := enc.run(runCtx, b.opts.FFmpeg, encoder); err != nil {
 			cancel()
 			src.RemoveConsumer(enc)
 			return nil, err
@@ -398,16 +457,9 @@ func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consu
 func (b *Bridge) checkOpus() {
 	b.omu.Lock()
 	defer b.omu.Unlock()
-	if b.opusEnc == "" && b.opusErr == nil {
-		if enc, err := opusCodec(b.opts.FFmpeg); err != nil {
-			b.opusErr = err
-			log.Info().Err(err).Msg("[bridge] no Opus audio for Protect")
-		} else {
-			b.opusEnc = enc
-		}
-	}
+	enc, _ := b.opusEncoderName()
 	if b.proto != nil {
-		b.proto.SetOpus(b.opusErr == nil)
+		b.proto.SetOpus(enc != "")
 	}
 }
 

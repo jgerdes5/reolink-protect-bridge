@@ -62,6 +62,19 @@ func (r *Runner) Restart() {
 		}
 		r.log.Info().Str("key", pin).Msg("[web] console certificate trusted")
 	}
+	opts.OnCameraCertPin = func(pin string) {
+		_, err := r.store.Update(func(c *config.Config) error {
+			if c.Protect.Host == host && c.Protect.CameraCertPin == "" {
+				c.Protect.CameraCertPin = pin
+			}
+			return nil
+		})
+		if err != nil {
+			r.log.Warn().Err(err).Msg("[web] can't save the camera connection certificate")
+			return
+		}
+		r.log.Info().Str("key", pin).Msg("[web] camera connection certificate trusted")
+	}
 	b, err := bridge.New(opts, r.log)
 	if err != nil {
 		r.log.Error().Err(err).Msg("[web] bridge not started")

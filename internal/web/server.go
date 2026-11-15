@@ -370,8 +370,11 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	before := s.opts.Store.Get()
+	var before config.Config
 	cfg, err := s.opts.Store.Update(func(c *config.Config) error {
+		// taken under the store's lock: a key learned meanwhile by the running
+		// bridge must not look like a change of this request
+		before = *c
 		// Stored secrets are only ever sent to the address they were entered
 		// for: if the address changes they must be entered again, otherwise
 		// whoever can change the address could collect them.
@@ -399,7 +402,7 @@ func (s *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if host != c.Protect.Host || p.ClearCertPin {
-				c.Protect.CertPin = "" // learned again on the next login
+				c.Protect.CertPin, c.Protect.CameraCertPin = "", "" // learned again on the next connection
 			}
 			c.Protect.Host = host
 			c.Protect.Username = strings.TrimSpace(p.Username)

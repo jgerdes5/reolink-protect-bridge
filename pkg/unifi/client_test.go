@@ -3,6 +3,7 @@ package unifi
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"io"
 	"net"
@@ -532,4 +533,26 @@ func TestProtectRing(t *testing.T) {
 	require.Equal(t, 3, rings)
 
 	require.Error(t, p.Ring(ctx, "000000000000"))
+}
+
+func TestCameraPinAndUploadURI(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer srv.Close()
+	cs := tls.ConnectionState{PeerCertificates: []*x509.Certificate{srv.Certificate()}}
+
+	var learned string
+	c := &Camera{Host: "192.0.2.1", OnPin: func(p string) { learned = p }}
+	require.NoError(t, c.verifyPin(cs)) // trust on first use
+	require.Equal(t, CertPinOf(srv.Certificate()), learned)
+	require.NoError(t, c.verifyPin(cs))
+
+	c.CertPin = strings.Repeat("ab", 32)
+	var pe *PinError
+	require.ErrorAs(t, c.verifyPin(cs), &pe)
+	require.True(t, pe.Camera)
+
+	require.NoError(t, c.checkUploadURI("https://192.0.2.1:7444/upload?x=1"))
+	for _, bad := range []string{"https://192.0.2.99:7444/upload", "http://192.0.2.1:7444/upload", "https://router.local/admin", "::bad"} {
+		require.Error(t, c.checkUploadURI(bad), bad)
+	}
 }

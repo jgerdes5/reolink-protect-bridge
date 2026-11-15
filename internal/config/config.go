@@ -40,6 +40,9 @@ type Protect struct {
 	// CertPin is the console certificate's key (SHA-256 hex), learned on the
 	// first login; cleared when the address changes or on request.
 	CertPin string `json:"certPin,omitempty"`
+	// CameraCertPin is the key of the certificate Protect presents on the
+	// camera connection (port 7442), learned and cleared like CertPin.
+	CameraCertPin string `json:"cameraCertPin,omitempty"`
 }
 
 type Camera struct {
@@ -162,7 +165,10 @@ func (c Config) Validate() error {
 	if err := validHost(c.Protect.Host); err != nil {
 		return fmt.Errorf("Protect address: %w", err)
 	}
-	if p := c.Protect.CertPin; p != "" {
+	for _, p := range []string{c.Protect.CertPin, c.Protect.CameraCertPin} {
+		if p == "" {
+			continue
+		}
 		if b, err := hex.DecodeString(p); err != nil || len(b) != 32 {
 			return errors.New("Protect certificate pin must be 64 hex digits")
 		}
@@ -270,6 +276,8 @@ func (c Config) Options() bridge.Options {
 			Password: c.Protect.Password,
 			Token:    c.Protect.Token,
 			CertPin:  c.Protect.CertPin,
+
+			CameraCertPin: c.Protect.CameraCertPin,
 		},
 		Name:     strings.TrimSpace(c.Camera.Name),
 		MAC:      c.Identity.MAC,

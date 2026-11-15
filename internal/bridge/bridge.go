@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
@@ -51,6 +52,9 @@ type Protect struct {
 	Password string `json:"password,omitempty"`
 	Token    string `json:"token,omitempty"`   // or a fixed adoption token
 	CertPin  string `json:"certPin,omitempty"` // console key for the login (unifi.ProtectClient.CertPin)
+	// CameraCertPin is the key Protect presents on the camera connection
+	// (unifi.Camera.CertPin).
+	CameraCertPin string `json:"cameraCertPin,omitempty"`
 }
 
 // Options configure a bridge.
@@ -70,6 +74,8 @@ type Options struct {
 	FFmpeg string // ffmpeg binary, default "ffmpeg"
 	// OnCertPin stores the console key learned on the first login.
 	OnCertPin func(pin string) `json:"-"`
+	// OnCameraCertPin stores the camera connection's key, learned likewise.
+	OnCameraCertPin func(pin string) `json:"-"`
 }
 
 // Bridge is one running doorbell.
@@ -97,10 +103,11 @@ type Bridge struct {
 	tmu        sync.Mutex // transcodes; held while one starts
 	transcodes map[string]*sharedTranscode
 
-	omu     sync.Mutex             // Opus encoders (opus.go)
-	opus    map[string]*sharedOpus // per source
-	opusEnc string                 // ffmpeg's Opus encoder, once known
-	opusErr error                  // no Opus encoder: don't ask again
+	omu       sync.Mutex                 // Opus encoders (opus.go)
+	opus      map[string]*sharedOpus     // per source
+	opusEnc   string                     // ffmpeg's Opus encoder, once known
+	opusErr   error                      // no Opus encoder: don't ask again
+	opusState atomic.Pointer[opusStatus] // for Status, without b.omu
 
 	snapSem  chan struct{}
 	snap     []byte
@@ -198,6 +205,8 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 		Doorbell: true,
 		HasAudio: true,
 		Identity: unifi.G4Doorbell,
+		CertPin:  opts.Protect.CameraCertPin,
+		OnPin:    opts.OnCameraCertPin,
 		Cert:     cert,
 		Token:    tokens.get,
 		Channel:  b.channel,
@@ -229,10 +238,12 @@ func New(opts Options, logger zerolog.Logger) (*Bridge, error) {
 // reolinkURL is the go2rtc reolink:// source URL for a stream.
 func (b *Bridge) reolinkURL(stream string) string {
 	d := b.opts.Doorbell
-	host := d.Host
-	if d.Port != 0 {
-		host = net.JoinHostPort(d.Host, strconv.Itoa(d.Port))
+	port := d.Port
+	if port == 0 {
+		port = baichuan.DefaultPort
 	}
+	// always with a port: a bare IPv6 address would be misread as host:port
+	host := net.JoinHostPort(d.Host, strconv.Itoa(port))
 	u := url.URL{Scheme: "reolink", User: url.UserPassword(d.Username, d.Password), Host: host, Path: "/" + stream}
 	if d.Channel != 0 {
 		u.RawQuery = "channel=" + strconv.Itoa(d.Channel)
@@ -981,14 +992,9 @@ type SourceStatus struct {
 
 func (b *Bridge) Status() Status {
 	var st Status
-	b.omu.Lock()
-	switch {
-	case b.opusErr != nil:
-		st.Opus, st.OpusError = "off", b.opusErr.Error()
-	case b.opusEnc != "":
-		st.Opus = "on"
+	if o := b.opusState.Load(); o != nil {
+		st.Opus, st.OpusError = o.state, o.err
 	}
-	b.omu.Unlock()
 	for i, src := range []*source.Source{b.main, b.sub} {
 		ok, since, err := src.Status()
 		ss := SourceStatus{Connected: ok, Since: since}

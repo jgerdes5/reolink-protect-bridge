@@ -40,9 +40,16 @@ type ProtectClient struct {
 }
 
 // PinError is a console certificate that differs from the pinned one.
-type PinError struct{ Got, Want string }
+type PinError struct {
+	Got, Want string
+	Camera    bool // on the camera connection (7442), not the login
+}
 
 func (e *PinError) Error() string {
+	if e.Camera {
+		return fmt.Sprintf("the certificate of Protect's camera connection changed (key %s, trusted %s): not connecting; "+
+			"if the console or Protect was reset or replaced, trust the new certificate on the Connections page", short(e.Got), short(e.Want))
+	}
 	return fmt.Sprintf("the console's certificate changed (key %s, trusted %s): refusing to send the password; "+
 		"if you replaced the console's certificate, trust the new one on the Connections page", short(e.Got), short(e.Want))
 }

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Talkback as Protect sets it up for a camera: ChangeTalkbackSettings with
@@ -23,6 +24,9 @@ type talkback struct {
 	mu   sync.Mutex
 	conn *net.UDPConn
 	port int
+	// read per datagram by the listener
+	opus    atomic.Bool                     // the format Protect set up last: Opus/RTP, else AAC
+	allowed atomic.Pointer[map[string]bool] // the console's addresses
 }
 
 // talkbackSettings is the reply Protect validates (TalkbackSettingsSchema): all
@@ -53,7 +57,10 @@ func (c *Camera) changeTalkbackSettings(payload json.RawMessage) any {
 
 	if s.TypeFmt != "aac" && (s.TypeFmt != "opus" || c.TalkOpus == nil) {
 		c.Log.Warn().Msgf("[unifi] %s: talkback format %q not supported", c.Name, s.TypeFmt)
-	} else if err := c.listenTalkback(s.BindPort); err != nil {
+		return s
+	}
+	c.talk.opus.Store(s.TypeFmt == "opus") // only this format is accepted
+	if err := c.listenTalkback(s.BindPort); err != nil {
 		c.Log.Warn().Err(err).Msgf("[unifi] %s: talkback listener", c.Name)
 	}
 	return s
@@ -83,6 +90,7 @@ func (c *Camera) listenTalkback(port int) error {
 	if len(allowed) == 0 {
 		return fmt.Errorf("can't resolve the console address %q", c.Host)
 	}
+	c.talk.allowed.Store(&allowed) // resolved again on every settings message
 
 	c.talk.mu.Lock()
 	defer c.talk.mu.Unlock()
@@ -113,16 +121,16 @@ func (c *Camera) listenTalkback(port int) error {
 			if err != nil {
 				return // closed
 			}
-			if !allowed[from.IP.String()] {
+			if a := c.talk.allowed.Load(); a == nil || !(*a)[from.IP.String()] {
 				continue
 			}
 			switch {
-			case n > 7 && buf[0] == 0xFF && buf[1]&0xF0 == 0xF0: // ADTS sync word
-				c.Talk(append([]byte(nil), buf[:n]...))
-			case c.TalkOpus != nil:
-				if pkt := rtpPayload(buf[:n]); len(pkt) > 0 {
+			case c.talk.opus.Load():
+				if pkt := rtpPayload(buf[:n]); len(pkt) > 0 && c.TalkOpus != nil {
 					c.TalkOpus(append([]byte(nil), pkt...))
 				}
+			case n > 7 && buf[0] == 0xFF && buf[1]&0xF0 == 0xF0: // ADTS sync word
+				c.Talk(append([]byte(nil), buf[:n]...))
 			}
 		}
 	}()
