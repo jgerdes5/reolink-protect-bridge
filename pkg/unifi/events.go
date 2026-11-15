@@ -12,14 +12,11 @@ import (
 	"time"
 )
 
-// Events a camera reports to Protect 7.3. Protect's "ds" daemon (package ds
-// 7.3.6, /usr/bin/ds) parses camera events with a strict typed schema and
-// dispatches exactly these function names: EventAnalytics (motion),
-// EventSmartDetect (person/vehicle/animal), EventSmartMotion, MCUEventMessage
-// (the doorbell button, see Ring) and GetRequest. Payload shapes follow what
-// woutersteegers/reolink-unifi-protect validated against ds; a frame ds can't
-// parse is passed to Protect, which logs "not expected over avclient" and drops
-// it. Event envelopes need timeStamp as an RFC 3339 string.
+// Events a camera reports to Protect. Protect's "ds" daemon parses them with a
+// strict schema and dispatches only these function names: EventAnalytics
+// (motion), EventSmartDetect (person/vehicle/animal), EventSmartMotion,
+// MCUEventMessage (doorbell button, see Ring) and GetRequest; anything it
+// can't parse is dropped. Event envelopes need timeStamp as an RFC 3339 string.
 
 // ringCooldown suppresses repeated rings from one press (ds has its own cooldown too).
 const ringCooldown = 10 * time.Second
@@ -173,12 +170,10 @@ func (c *Camera) ClearEvents() {
 	c.Motion(false)
 }
 
-// Ring reports a press of the doorbell button. A real G4 Doorbell's
-// ubnt_ctlserver (RingButtonReactor) broadcasts MCUEventMessage with eventType
-// "EventRingButtonPressed", ubnt_avclient forwards it, and ds's RingHandler
-// turns it into a ring event: notification, call screen, lastRing. With
-// RingAPI set, Protect's HTTP route is used instead (as unifi-cam-proxy does).
-// Ring returns at once; the ring is sent in the background.
+// Ring reports a press of the doorbell button as MCUEventMessage with
+// eventType "EventRingButtonPressed", as a real G4 Doorbell does, or through
+// Protect's HTTP API when RingAPI is set. It returns at once; the ring is sent
+// in the background.
 func (c *Camera) Ring(ctx context.Context) {
 	c.ev.mu.Lock()
 	if time.Since(c.ev.lastRing) < ringCooldown {

@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// StreamInfoList as libnetpublic builds it: an encodeTable per stream type and
+// StreamInfoList as the doorbell builds it: an encodeTable per stream type and
 // resolution.
 const encCapsXML = `<body><StreamInfoList version="1.1"><StreamInfo><channelBits>1</channelBits>
 <encodeTable><type>mainStream</type><resolution><width>1920</width><height>1440</height></resolution>

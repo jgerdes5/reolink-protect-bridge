@@ -23,10 +23,6 @@ func linearToALaw(pcm int16) byte {
 	}
 
 	// pcm is an int16, so it can never be greater than 32767.
-	// We handle the overflow case before this function.
-	// if pcm > 32767 {
-	// 	pcm = 32767
-	// }
 
 	if pcm >= 256 {
 		exponent = 7

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Response layouts as the D340W firmware builds them (libnetpublic *_s2x).
+// Response layouts as the D340W firmware builds them.
 const imageXML = `<?xml version="1.0" encoding="UTF-8" ?>
 <body>
 <VideoInput version="1.1"><channelId>0</channelId><bright>128</bright><contrast>128</contrast><saturation>128</saturation><hue>128</hue><sharpen>128</sharpen></VideoInput>

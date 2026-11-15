@@ -6,9 +6,7 @@ import (
 )
 
 // Feedback is a message Protect's media server sends back on a stream
-// socket: u16 type, u16 length (big-endian), body. Measured on the G5
-// firmware (libubnt_encoder TransportTCP::ReadFeedbackMessages and
-// OutStream::SignalFeedbackMessages).
+// socket: u16 type, u16 length (big-endian), body.
 type Feedback struct {
 	Type uint16
 	Body []byte

@@ -33,9 +33,8 @@ func (c *Client) Probe() error {
 
 	var vcodec, acodec *core.Codec
 	var iframeTries int
-	// Use a 10s timeout instead of core.ProbeTimeout (5s) because long-GOP cameras (e.g. Trackmix)
-	// have 2-4s keyframe intervals, and any packet drop or missing VPS/SPS can require waiting
-	// for a second keyframe, which would exceed a 5s timeout and cause random loading failures.
+	// Longer than core.ProbeTimeout (5s): with 2-4s keyframe intervals a dropped
+	// packet or missing VPS/SPS means waiting for a second keyframe.
 	timeout := time.After(10 * time.Second)
 
 ProbeLoop:
@@ -261,7 +260,6 @@ func (c *Client) processPacket(packet baichuan.MediaPacket, videoCount, audioCou
 		}
 
 		if packet.Codec == "H265" {
-			// NALU reordering...
 			nalus := splitAnnexB(packet.Data)
 			nalus = filterH265DecodableNALs(nalus)
 			nalus = reorderH265NALsForAccessUnit(nalus)

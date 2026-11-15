@@ -27,9 +27,8 @@ var aiObjects = []struct{ reolink, protect string }{
 }
 
 // staleAfter is the safety net for an event whose end was lost (a dropped
-// push): Reolink pushes only on changes, so a person standing still sends
-// nothing. unifi-cam-proxy's 90 s cut such detections short; the connection
-// itself is checked every 5 s by Baichuan pings and clears events when it drops.
+// push). Reolink pushes only on changes, so a person standing still sends
+// nothing for a long time; a dropped connection clears events by itself.
 const staleAfter = 10 * time.Minute
 
 type alarmState struct {

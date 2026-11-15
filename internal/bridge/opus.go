@@ -17,11 +17,9 @@ import (
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 )
 
-// opusEncoder turns a source's AAC audio into Opus for Protect. A UniFi
-// camera sends Opus next to AAC when Protect asks for it (withOpus), and
-// Protect's live view plays Opus; the doorbell only has AAC. One ffmpeg per
-// source feeds every Protect channel of it. It is the source's audio
-// consumer: ADTS goes in, Ogg Opus comes out, 20 ms per packet.
+// opusEncoder turns a source's AAC audio into Opus, which Protect's live view
+// plays; the doorbell only has AAC. One ffmpeg per source feeds all its
+// Protect channels: ADTS in, Ogg Opus out, 20 ms per packet.
 type opusEncoder struct {
 	core.Connection
 
@@ -133,11 +131,8 @@ func (o *opusEncoder) capturedAt(pos uint64) (time.Time, bool) {
 }
 
 // opusArgs: ADTS from stdin to Ogg Opus on stdout, 16 kHz mono in 20 ms
-// packets like a G4 (libubnt_encoder: OPUS_APPLICATION_AUDIO, complexity 0;
-// the config tag cf 00 03 02 says 16 kHz), one Ogg page per packet. The
-// tiny probe size matters: with ffmpeg's usual probing (even 4 KiB) the
-// demuxer keeps about a second of audio queued for the whole run, which put
-// Opus a second behind the picture.
+// packets like a G4, one Ogg page per packet. The tiny probe size matters:
+// with ffmpeg's usual probing the demuxer keeps about a second of audio queued.
 func opusArgs(encoder string) []string {
 	args := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
 		"-probesize", "32", "-analyzeduration", "0", "-f", "aac", "-i", "pipe:0",

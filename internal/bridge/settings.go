@@ -13,14 +13,11 @@ import (
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 )
 
-// Protect's camera settings, applied to the Reolink doorbell over Baichuan
-// (msg IDs and XML from the D340W firmware, see pkg/baichuan/settings.go).
-// Protect sends all of them on every connect and each change on its own; they
-// are debounced (settleQuiet after the last change, at most settleMax after
-// the first, so a dragged slider still applies while it moves) and applied
-// together, each group as GET -> modify -> SET and only if a value differs.
-// The control connection stays open between flushes for settingsIdle, so a
-// change costs no new login.
+// Protect's camera settings, applied to the doorbell over Baichuan (msg IDs
+// and XML from the D340W firmware, see pkg/baichuan/settings.go). Changes are
+// debounced (settleQuiet after the last, at most settleMax after the first)
+// and applied per group as GET -> modify -> SET, only if a value differs. The
+// control connection is kept open for settingsIdle between flushes.
 
 const (
 	settleQuiet   = 250 * time.Millisecond
@@ -451,7 +448,7 @@ func update(ctx context.Context, c *baichuan.Client, get, set uint32, ch uint8, 
 	if !change(body) {
 		return nil
 	}
-	if debug { // what the doorbell had and what it gets: to see what it keeps
+	if debug {
 		log.Debug().Msgf("[settings] %s: doorbell had %s", what, before)
 		log.Debug().Msgf("[settings] %s: writing %s", what, body.Marshal())
 	}
@@ -631,11 +628,9 @@ func applyMotion(ctx context.Context, c *baichuan.Client, ch uint8, m *unifi.Mot
 // motionChange returns the change for motion detection.
 func motionChange(m *unifi.Motion) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
-		// m.Enable is not "motion detection on": Protect sends
-		// enableMotionDetection && algorithm == enhanced, so false with its
-		// default (stable) algorithm. The bridge needs the doorbell's motion
-		// detection for Protect's motion events, so it is kept on (this also
-		// undoes earlier versions that switched it off).
+		// m.Enable is not "motion detection on" (Protect sends
+		// enableMotionDetection && algorithm == enhanced). Protect's motion
+		// events need the doorbell's motion detection, so it stays on.
 		changed := b.Set("MD/enable", "1")
 		var zones []unifi.Zone
 		sens := -1
@@ -984,11 +979,9 @@ var osdAnchors = map[string][2]string{
 	"bottomLeft": {"1", "65536"}, "bottomMiddle": {"65537", "65536"}, "bottomRight": {"65536", "65536"},
 }
 
-// osdChange sets the name and date overlay. The name goes to Protect's
-// position and the date to the other vertical edge (Reolink places them
-// separately, Protect has one position). Protect's "logo" is the UniFi logo
-// a UniFi camera draws; the Reolink watermark is never what that means, so
-// it stays off (Protect turns its logo on by default).
+// osdChange sets the name and date overlay: the name at Protect's position,
+// the date on the other vertical edge. Protect's "logo" means the UniFi logo,
+// so the Reolink watermark stays off.
 func osdChange(o unifi.OSD) func(*baichuan.Node) bool {
 	return func(b *baichuan.Node) bool {
 		changed := false

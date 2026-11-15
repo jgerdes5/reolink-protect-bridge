@@ -223,8 +223,8 @@ func (c *Client) Login(ctx context.Context) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
-	// Keep what the camera negotiated in its nonce reply (None, BC or AES).
-	// Only a camera that did not say falls back to AES, as before.
+	// Keep what the camera negotiated in its nonce reply (None, BC or AES);
+	// only a camera that did not say falls back to AES.
 	c.stateMu.Lock()
 	if c.hasAESKey && !c.negotiated {
 		c.mode = EncryptionAES
@@ -374,19 +374,16 @@ func (c *Client) StartPreview(ctx context.Context, channel uint8, stream Stream)
 					continue
 				}
 
-				// Skip pure keepalive messages (which do not carry media frames).
-				// Legitimate media packets always have a payload size > 8 bytes,
-				// whereas pure keepalive packets only carry a 4-byte check value.
-				// Rare large keepalives (due to MsgNum collision marking them as
-				// binary) will be caught by the self-healing parser reset below.
+				// Skip keepalives: they carry only a 4-byte check value, media
+				// packets always more than 8 bytes. Larger ones are caught by
+				// the parser reset below.
 				if len(msg.XML) > 0 && strings.Contains(msg.XML, "checkPos") && len(msg.Payload) <= 8 {
 					continue
 				}
 
 				parsed, err := parser.Append(msg.Payload)
 				if err != nil {
-					// Reset the parser and continue instead of killing the connection.
-					// This allows recovery from occasional corrupt/unexpected bytes.
+					// recover from corrupt bytes without dropping the connection
 					parser = MediaParser{}
 					continue
 				}

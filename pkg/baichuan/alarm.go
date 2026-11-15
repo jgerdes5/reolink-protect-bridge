@@ -58,10 +58,9 @@ func (c *Client) SubscribeAlarms(ctx context.Context) (<-chan []AlarmEvent, func
 					continue
 				default:
 				}
-				// A ring must never be lost: wait for the reader. This only
-				// holds up this goroutine; the connection's read loop keeps
-				// going (its subscriber buffer is large). Motion and AI
-				// updates are still dropped, as before.
+				// A ring must never be lost: wait for the reader (the
+				// connection's read loop keeps going). Motion and AI updates
+				// are dropped.
 				if !hasVisitor(events) {
 					log.Printf("[baichuan] WARNING: alarm reader busy, event dropped (msgNum=%d)", msg.Header.MsgNum)
 					continue

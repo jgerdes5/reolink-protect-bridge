@@ -9,13 +9,10 @@ import (
 	"sync"
 )
 
-// Talkback as Protect 7.3 sets it up for a camera (service.js
-// updateTalkbackSettings): ChangeTalkbackSettings with typeFmt "aac", typeIn
-// "serverudp", bindPort 7004, 22050 Hz mono. The camera listens on that UDP
-// port and Protect sends one ADTS AAC frame per datagram to the camera's IP
-// (the ip in hello). A real camera's ubnt_talkback does exactly this
-// (InputServerUDP -> InputChainParserADTS -> DecoderAAC). Opus over RTP is used
-// only for HomeKit and is not offered here.
+// Talkback as Protect sets it up for a camera: ChangeTalkbackSettings with
+// typeFmt "aac", typeIn "serverudp", bindPort 7004, 22050 Hz mono. The camera
+// listens on that UDP port and Protect sends one ADTS AAC frame per datagram
+// to the camera's IP (the ip in hello).
 
 const talkbackPort = 7004
 

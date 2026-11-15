@@ -16,16 +16,10 @@ import (
 )
 
 // transcoder runs one ffmpeg pipeline that turns a source's video into a
-// codec the doorbell does not send, for every Protect channel that needs it
-// (video2 and video3 both come from the sub stream, so they share one). It is
-// the source's video consumer; MPEG-TS goes in and out, so timestamps
-// survive. Audio does not pass through it: each channel takes the source's
-// audio directly (audioTap).
-//
-// It exists for Protect's "enhanced encoding": once a camera is switched to
-// H.265, Protect expects every channel in H.265 and drops H.264 segments, but
-// Reolink sub streams are always H.264. The sub stream is small (640x480), so
-// encoding it costs a fraction of one core.
+// codec the doorbell does not send, shared by every Protect channel that
+// needs it. MPEG-TS goes in and out, so timestamps survive; audio bypasses it
+// (audioTap). Needed because Protect in H.265 mode drops H.264 segments, and
+// Reolink sub streams are always H.264.
 type transcoder struct {
 	core.Connection
 

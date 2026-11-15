@@ -484,12 +484,10 @@ func (c *Consumer) parameterSets(keyframe []byte) (sps, pps []byte) {
 // trackClock turns a track's 32-bit RTP timestamps into a continuous position
 // on the stream timeline, the way a camera stamps frames with its capture clock.
 //
-// 32-bit tick deltas wrap (after 13 h at 90 kHz) and restart when a go2rtc
-// producer reconnects under a running consumer; on such a discontinuity the
-// timeline is re-anchored to the wall-clock time since the stream started. The
-// source's clock also drifts against the wall clock (crystals are off by tens
-// of ppm, a second every few hours); beyond maxDrift the steps are nudged
-// towards wall time. Positions never go backwards.
+// 32-bit ticks wrap (13 h at 90 kHz) and restart when the producer
+// reconnects; on such a discontinuity the timeline is re-anchored to wall
+// time. Drift beyond maxDrift is nudged towards wall time. Positions never go
+// backwards.
 type trackClock struct {
 	rate    int64 // ticks per second
 	last    uint32
@@ -523,11 +521,9 @@ func (t *trackClock) next(ts uint32, elapsed time.Duration) time.Duration {
 	return time.Duration(t.ticks/t.rate)*time.Second + time.Duration(t.ticks%t.rate*int64(time.Second)/t.rate)
 }
 
-// metadata returns onMetaData. By default it is the AMF object a real UniFi
-// camera sends (libubnt_encoder in firmware 5.5.45; the keys as measured by
-// pyunifiwire on a G5, alphabetical as the camera serialises them). Protect files
-// recordings as <MAC>_<channelId>. The ffmpeg variant is what unifi-cam-proxy feeds
-// Protect for H.264 channels.
+// metadata returns onMetaData: by default the AMF object a real UniFi camera
+// sends (keys alphabetical, as the camera serialises them), or the ffmpeg
+// variant unifi-cam-proxy uses. Protect files recordings as <MAC>_<channelId>.
 func (c *Consumer) metadata(width, height int) any {
 	if c.opts.FFmpegMetadata {
 		return c.ffmpegMetadata(width, height)
@@ -663,8 +659,7 @@ func (c *Consumer) hevcParameterSets(keyframe []byte) (vps, sps, pps []byte) {
 
 // hevcConfig is the H.265 decoder config as UniFi cameras send it: frame type
 // 6, then the bare VPS, SPS and PPS with 2-byte lengths. A standard hvcC
-// record here makes Protect treat the stream as an unknown codec (measured by
-// rjmotion/pyunifiwire on real cameras, see reolink-unifi-protect).
+// record makes Protect treat the stream as an unknown codec.
 func hevcConfig(vps, sps, pps []byte) []byte {
 	b := []byte{frameHEVCConf<<4 | codecHEVC, 1}
 	for _, nalu := range [][]byte{vps, sps, pps} {
@@ -695,15 +690,12 @@ func hevcParameterSets(avcc []byte) (vps, sps, pps []byte) {
 	return
 }
 
-// RTT answers Protect's round-trip probe (feedback type 4) the way a UniFi
-// camera does (libubnt_encoder ContainerFLV::FeedRtt/BuildOnRtt): an onRtt
-// script tag right away, with the probe's id echoed as 4 raw bytes,
-// rttMillis = time since the trailer Protect echoes (id(4) rate(4) ticks(8))
-// was written, and encDelay = capture-to-encoder latency, 0 here since
-// nothing is encoded. A camera computes it from its capture clock; trailers
-// here follow the source's clock, which may be off wall time by up to
-// maxDrift, so the send time of each recent trailer is kept instead. An
-// unknown trailer gives -1. Nothing is sent before the stream has started.
+// RTT answers Protect's round-trip probe (feedback type 4) like a UniFi
+// camera: an onRtt script tag with the probe's id echoed as 4 raw bytes,
+// rttMillis = time since the echoed trailer (id(4) rate(4) ticks(8)) was
+// written (-1 if unknown) and encDelay 0. Trailer clocks may be off wall time
+// by up to maxDrift, so each recent trailer's send time is kept. Nothing is
+// sent before the stream has started.
 func (c *Consumer) RTT(body []byte) (rttMillis float64, sent bool) {
 	if len(body) < 16 {
 		return 0, false

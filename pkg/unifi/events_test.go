@@ -64,7 +64,7 @@ func TestRingCameraProtocol(t *testing.T) {
 
 	cam.Ring(context.Background())
 	msg, payload := readMsg(t, conn)
-	// what ds 7.3.6 matches: functionName MCUEventMessage, payload.eventType
+	// what ds matches: functionName MCUEventMessage, payload.eventType
 	require.Equal(t, "MCUEventMessage", msg.FunctionName)
 	require.Equal(t, map[string]any{"eventType": "EventRingButtonPressed"}, payload)
 	_, err := time.Parse(time.RFC3339, msg.TimeStamp) // ds wants RFC 3339

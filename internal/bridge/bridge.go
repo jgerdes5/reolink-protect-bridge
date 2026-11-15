@@ -529,8 +529,8 @@ func (b *Bridge) streamOnce(ctx context.Context, channel, addr, streamName, code
 	}
 	defer cons.Stop()
 
-	// Opus next to AAC, as Protect asks every camera for (opus.go); before
-	// the first keyframe, which carries its config
+	// Protect asks every camera for Opus next to AAC (opus.go). Set up before
+	// the first keyframe, which carries its config.
 	if _, audio := cons.TrackCodecs(); audio != nil && b.opts.FFmpeg != "" {
 		if release, err := b.opusFor(ctx, src, cons); err == nil {
 			cons.OnStop(release)
@@ -954,7 +954,6 @@ func NewMAC(seed string) string {
 	return "02" + strings.ToUpper(hex.EncodeToString(sum[:5]))
 }
 
-// LocalIP is the address this host uses to reach host.
 // hostOnly drops a port from "host:port" or "[v6]:port".
 func hostOnly(h string) string {
 	if host, _, err := net.SplitHostPort(h); err == nil {
@@ -963,6 +962,7 @@ func hostOnly(h string) string {
 	return strings.Trim(h, "[]")
 }
 
+// LocalIP is the address this host uses to reach host.
 func LocalIP(host string) string {
 	conn, err := net.Dial("udp", net.JoinHostPort(host, "7442"))
 	if err != nil {

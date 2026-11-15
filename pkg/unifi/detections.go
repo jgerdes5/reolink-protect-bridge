@@ -5,13 +5,10 @@ import (
 	"time"
 )
 
-// Real detection boxes. A UniFi camera does the geometry itself: it reports
-// each object's box ([x, y, w, h] in 0-1000 of the frame), which zones it is
-// in and which lines it crossed; Protect and ds only read those (descriptor
-// zones/lines and the zonesStatus/linesStatus maps). The caller computes the
-// geometry against Protect's zones (SmartDetect settings) and passes the
-// result here; while a smart-detect event is open it goes to Protect as
-// "moving" frames, so the box follows the object in live view.
+// Real detection boxes. A UniFi camera does the geometry itself (Protect only
+// reads it): each object's box ([x, y, w, h] in 0-1000), the zones it is in and
+// the lines it crossed. The caller computes these against Protect's zones;
+// during a smart-detect event they go to Protect as "moving" frames.
 
 // Box is one detected object.
 type Box struct {

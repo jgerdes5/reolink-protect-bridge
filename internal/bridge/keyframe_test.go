@@ -135,7 +135,7 @@ func (r *recordIframer) RequestIframe(_ context.Context, _ uint8, stream string)
 
 func (r *recordIframer) Close() error { return nil }
 
-// The body the D340W firmware parses (netserver RequestIframe).
+// The body the D340W firmware parses.
 func TestIframeBody(t *testing.T) {
 	n, err := baichuan.ParseNode(string(baichuan.IframeBody(0, "subStream")))
 	require.NoError(t, err)

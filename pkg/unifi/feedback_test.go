@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The samples pyunifiwire captured from Protect.
+// Samples captured from Protect.
 func TestReadFeedback(t *testing.T) {
 	in := []byte{
 		0, 0, 0, 12, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0, 0xff, 0, 0, // bitrate: no limit

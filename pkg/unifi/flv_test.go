@@ -53,7 +53,7 @@ func TestTrailer(t *testing.T) {
 	audio := appendTrailer(nil, 16000, 2*time.Second)
 	require.Equal(t, "00003e80"+"00000000"+"0000000000007d00", hex.EncodeToString(audio)) // 32000
 
-	// 14 h at 90 kHz no longer fits 32 bits; clock_sync.py's uint32 wrapped here
+	// 14 h at 90 kHz does not fit 32 bits
 	long := appendTrailer(nil, clockVideo, 14*time.Hour)
 	require.Equal(t, uint64(14*3600*90000), binary.BigEndian.Uint64(long[8:]))
 

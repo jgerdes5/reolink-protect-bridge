@@ -25,8 +25,7 @@ import (
 // Camera speaks the ubnt_avclient protocol to UniFi Protect on behalf of one
 // virtual camera: it connects to wss://<host>:7442, adopts with a token, answers
 // Protect's requests and starts/stops the video channels Protect asks for.
-// The protocol follows unifi-cam-proxy (keshavdv, woutersteegers fork), which
-// is proven against Protect 7.x; deviations are commented.
+// The protocol follows unifi-cam-proxy (keshavdv, woutersteegers fork).
 type Camera struct {
 	Host     string // Protect console address
 	Port     int    // camera WebSocket port, default 7442
@@ -50,9 +49,8 @@ type Camera struct {
 	Start func(channel, addr, streamName, codec string)
 	Stop  func(channel string)
 	// EchoVideo reports the frame rate Protect asks for right away (rounded
-	// to the channel's FPSValues) because the caller applies it to the real
-	// camera. Protect takes the camera's reported fps over its own, so
-	// reporting the old value until the change is through would undo it.
+	// to the channel's FPSValues): Protect takes the camera's reported fps
+	// over its own, so reporting the current value would undo the change.
 	EchoVideo bool
 	// Snapshot returns a current JPEG.
 	Snapshot func(ctx context.Context) ([]byte, error)

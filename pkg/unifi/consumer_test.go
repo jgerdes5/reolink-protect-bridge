@@ -231,7 +231,7 @@ func TestTrackClock(t *testing.T) {
 }
 
 func TestTrackClockNonIntegerRate(t *testing.T) {
-	// 44.1 kHz: a rate/1000 divisor (44) drifted 8 s per hour
+	// 44.1 kHz: not a whole number of ticks per millisecond
 	c := trackClock{rate: 44100}
 	var ts uint32
 	var at time.Duration

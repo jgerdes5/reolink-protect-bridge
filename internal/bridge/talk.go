@@ -16,11 +16,9 @@ import (
 )
 
 // Talkback: Protect sends ADTS AAC (22.05 kHz mono) over UDP, one frame per
-// datagram (see pkg/unifi/talkback.go). go2rtc backchannels take PCM-family
-// codecs (the reolink producer: PCMA/PCMU 8 kHz, PCM 16/8 kHz, which it turns
-// into the doorbell's ADPCM), so ffmpeg decodes the AAC. A session opens with
-// the first frame and closes after talkIdle without audio, which also releases
-// the camera's talk channel.
+// datagram (pkg/unifi/talkback.go). go2rtc backchannels take PCM-family codecs,
+// so ffmpeg decodes the AAC. A session opens with the first frame and closes
+// after talkIdle without audio, releasing the camera's talk channel.
 
 // talkIdle matches the doorbell's own talk session (reolink.TalkIdle): the
 // decoder and the backchannel stay up as long as the doorbell keeps listening,
@@ -234,10 +232,8 @@ func openTalk(src *source.Source, ffmpegBin string) (*talkSession, error) {
 		return nil, err
 	}
 
-	// 20 ms packets, timestamps in samples. The first, silent one goes out
-	// now: the doorbell's talk session opens on the first packet, so that
-	// starts while ffmpeg is still starting (audio before it is open is
-	// dropped anyway).
+	// 20 ms packets, timestamps in samples. A silent first packet opens the
+	// doorbell's talk session while ffmpeg is still starting.
 	chunk := rate / 50 * sampleBytes
 	silence := make([]byte, chunk)
 	if format == "alaw" || format == "mulaw" {

@@ -15,8 +15,7 @@ import (
 // The doorbell's video encoders: frame rate, bitrate and keyframe interval of
 // the main and sub stream (Compression, msg 56/57), and the values it offers
 // (StreamInfoList, msg 146: an encodeTable per stream and resolution with
-// comma-separated framerateTable and bitrateTable in kbit/s; libnetpublic
-// get_encodeTable_from_xmlnode).
+// comma-separated framerateTable and bitrateTable in kbit/s).
 
 const (
 	msgEncGet    = 56
@@ -236,7 +235,7 @@ func (b *Bridge) applyVideo(ctx context.Context, c *baichuan.Client, ch uint8, r
 		}
 		log.Info().Msg("[settings] frame rate and bitrate applied to the doorbell")
 	}
-	// keep the choices, take the values the doorbell has now
+	// keep the choices, take the doorbell's current values
 	now := encoderState(body, nil)
 	for i := range enc {
 		enc[i].fps, enc[i].kbps = now[i].fps, now[i].kbps

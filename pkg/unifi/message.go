@@ -33,8 +33,8 @@ type Channel struct {
 	BitrateMin, BitrateMax int // bit/s
 }
 
-// Identity is what Protect uses to recognise the camera model. Since Protect 3
-// it keys on sysid + platform + firmwareBuild, not on the model string.
+// Identity is what Protect uses to recognise the camera model: it keys on
+// sysid + platform + firmwareBuild, not on the model string.
 type Identity struct {
 	Model         string // "UVC G4 Doorbell"
 	SysID         uint32 // 0xa571
@@ -43,8 +43,8 @@ type Identity struct {
 	FirmwareBuild string // e.g. "0dda191.261027.0531"
 }
 
-// G4Doorbell is the identity the bridge presents, decoded from the official
-// UniFi G4 Doorbell firmware v5.5.45 header. Verified with Protect 7.3.74.
+// G4Doorbell is the identity the bridge presents, from the official UniFi G4
+// Doorbell firmware v5.5.45 header.
 var G4Doorbell = Identity{"UVC G4 Doorbell", 0xa571, "s5l", "5.5.45", "0dda191.261027.0531"}
 
 func rfc3339ms(t time.Time) string {
@@ -61,11 +61,10 @@ func (c *Camera) videoCodecs() []string {
 	return []string{"h264"}
 }
 
-// featureFlags are the camera capabilities sent in the hello. Protect 7.3
-// reads only the short keys (FeatureFlagsModel.deserializeFromCamera): has*/can*
-// keys are ignored, and canAdjustIspSettings, hasWdr, hasMotionZones and
-// hasIcrSensitivity are always on. Each key below unlocks a setting in
-// Protect that the bridge applies to the doorbell.
+// featureFlags are the camera capabilities sent in the hello. Protect reads
+// only the short keys (has*/can* are ignored; canAdjustIspSettings, hasWdr,
+// hasMotionZones and hasIcrSensitivity are always on). Each key below unlocks
+// a setting in Protect that the bridge applies to the doorbell.
 func (c *Camera) featureFlags() map[string]any {
 	mic := 0
 	if c.HasAudio {
@@ -88,8 +87,8 @@ func (c *Camera) featureFlags() map[string]any {
 		"truedaynight":   true, // night vision block -> day/night mode and IR LEDs
 		"ledStatus":      true, // status light -> doorbell button light; PATCH ledSettings fails without it
 		// privacy zones -> the doorbell's masks (Shelter): at most 4, each
-		// turned into its bounding rectangle. Not rectangleOnly: Protect 7.3's
-		// web UI hides the privacy section for such cameras (real G4s send false).
+		// turned into its bounding rectangle. Not rectangleOnly: Protect's
+		// web UI hides the privacy section for such cameras.
 		"privacyMask":  true,
 		"privacyMasks": map[string]any{"maxZones": 4, "rectangleOnly": false},
 		// exclusion zones (Protect reads the key "excludeZone"): cut out of the

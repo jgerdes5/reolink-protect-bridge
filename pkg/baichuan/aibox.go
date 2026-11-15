@@ -15,10 +15,7 @@ import (
 // frames on the main stream ("AI Mark"): nested TLVs (type u8, length u16 LE),
 // partly LZ4-frame compressed, leaves x1,y1,x2,y2,confidence as u16 LE. The
 // same box appears once per wrapper ("view"/class), so copies with equal
-// rectangles are merged. Format as decoded by woutersteegers/reolink-unifi-
-// protect (deploy/ai-sidecar/decode.mjs, from nodelink-js); the D340W
-// firmware writes these TLVs in media_bcframe.cpp with LZ4F ("compress ai
-// data").
+// rectangles are merged.
 type AIBox struct {
 	X1, Y1, X2, Y2 int
 	Confidence     int

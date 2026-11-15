@@ -8,29 +8,17 @@ import (
 )
 
 // UniFi cameras push FLV over a plain TCP socket that Protect hands out in
-// ChangeVideoSettings ("extendedFlv"). It is ordinary FLV with three additions,
-// as written by libubnt_encoder (ContainerFLV) in UniFi firmware 5.5.45:
+// ChangeVideoSettings ("extendedFlv"). It is ordinary FLV plus:
 //
-//   - the header flags byte has bit 2 set for "extended format" on top of the
-//     usual audio (4) and video (1) bits, so 7 for a stream with audio;
-//   - every tag (after its PreviousTagSize) is followed by a 16-byte trailer:
-//     a 32-bit clock rate, 32 zero bits, and the tag's time as a 64-bit count
-//     of that clock's ticks. The camera uses its capture clock, the same clock
-//     as the tag timestamp. Firmware 5.5.45 used 90000 for video and 11025 for
-//     everything else; a G4 Instant on Protect 7.3 (captured) uses 90000 for
-//     video and script tags, the sample rate (16000) for AAC and 48000 for
-//     Opus, which is what is written here;
-//   - besides AAC audio (tag 8) it sends Opus (tag 10) when Protect asks for
-//     it (avSerializer parameters withOpus): a config tag cf 00 03 02, then
-//     one raw Opus packet (20 ms) per tag. Protect's live view (WebRTC) plays
-//     Opus, so without it Protect has to convert the audio first;
-//   - before every video keyframe an onMpma tag (bitrate envelope) and an
-//     onClockSync tag map the stream clock to wall-clock time.
-//
-// unifi-cam-proxy's clock_sync.py writes the same layout, but it sits behind
-// ffmpeg in a pipe and sees neither capture times nor frame types: it stamps
-// trailers with the time it reads a tag, truncates them to 32 bits (wrapping
-// after 13 h at 90 kHz) and sends the sync tags on a 5 s timer.
+//   - header flags bit 2 ("extended format") on top of audio (4) and video (1);
+//   - after every tag's PreviousTagSize a 16-byte trailer: 32-bit clock rate,
+//     32 zero bits, the tag's time as a 64-bit tick count of that clock
+//     (90000 for video and script tags, the sample rate for AAC, 48000 for
+//     Opus);
+//   - Opus audio (tag 10) next to AAC when Protect asks for it (withOpus): a
+//     config tag cf 00 03 02, then one raw 20 ms packet per tag;
+//   - before every keyframe an onMpma tag (bitrate envelope) and an
+//     onClockSync tag mapping the stream clock to wall-clock time.
 const (
 	tagAudio  = flv.TagAudio
 	tagVideo  = flv.TagVideo
@@ -41,10 +29,9 @@ const (
 	clockOpus  = 48000
 )
 
-// opusConfig is the payload of the Opus config tag, as a G4 Instant sends it.
-// libubnt_encoder (ContainerFLV::BuildAudioOpusCodecBytes) writes cf 00 03 and
-// the sample rate's index: 48000 0, 24000 1, 16000 2, 12000 3, 8000 4. The
-// bridge encodes at 16 kHz.
+// opusConfig is the payload of the Opus config tag: cf 00 03 and the sample
+// rate's index (48000 0, 24000 1, 16000 2, 12000 3, 8000 4). The bridge
+// encodes at 16 kHz.
 var opusConfig = []byte{0xcf, 0x00, 0x03, 0x02}
 
 // fileHeader is the FLV header with UniFi's flags, plus PreviousTagSize0.
@@ -143,8 +130,7 @@ func flvTime(at time.Duration) uint32 {
 }
 
 // appendTag appends one tag, its payload being the concatenated parts, with
-// PreviousTagSize and trailer. Writing the parts straight into b copies a frame
-// once instead of three times (media header, flv.EncodeTag, trailer append).
+// PreviousTagSize and trailer, writing the parts straight into b.
 func (m *muxer) appendTag(b []byte, tagType byte, at time.Duration, parts ...[]byte) []byte {
 	size := 0
 	for _, p := range parts {
@@ -184,7 +170,7 @@ func (m *muxer) appendSync(b []byte, at time.Duration, now time.Time) []byte {
 	return m.appendTag(b, tagScript, at, scriptData("onClockSync", sync))
 }
 
-// mpmaFor is onMpma as a G4 Instant sends it (captured on Protect 7.3), for
+// mpmaFor is onMpma as a G4 Instant sends it, for
 // a stream configured to bitrate bit/s that can go down to minimum: cs is the
 // configured cap (min 32000), m the encoder's adaptive target (cur) within
 // its range, sp the server/player limit, t the current target. Protect plans

@@ -7,11 +7,8 @@ import (
 // withTiming returns the H.264 SPS with VUI timing info for fps added, or the
 // SPS unchanged when it already has a VUI or can't be parsed.
 //
-// Some cameras (the Reolink doorbell among them) send an SPS without any VUI, so
-// the stream carries no frame rate. Real UniFi encoders always signal one, and
-// unifi-cam-proxy adds it with ffmpeg's h264_metadata=tick_rate for Reolink and
-// Amcrest sources because Protect's live view needs it
-// (keshavdv/unifi-cam-proxy#31). The same is done here: num_units_in_tick 1,
+// The Reolink doorbell sends an SPS without VUI, so the stream carries no
+// frame rate, which Protect's live view needs: num_units_in_tick 1,
 // time_scale 2*fps, fixed_frame_rate_flag 0 (night mode lowers the rate).
 func withTiming(sps []byte, fps int) []byte {
 	if fps <= 0 || len(sps) < 4 {

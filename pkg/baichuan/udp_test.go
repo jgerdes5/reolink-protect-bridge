@@ -73,8 +73,7 @@ func TestAckWindow(t *testing.T) {
 }
 
 func TestAckWindowStaleUnderflowPrevention(t *testing.T) {
-	// Scenario reported by user: stale packets <= consumedID remain in store
-	// (e.g. retransmitted packets)
+	// stale packets <= consumedID remain in store (e.g. retransmits)
 	store := make(map[uint32][]byte)
 	store[5] = []byte("stale5")
 

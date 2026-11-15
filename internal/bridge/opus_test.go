@@ -112,7 +112,7 @@ func TestOpusStream(t *testing.T) {
 	require.Less(t, near, int64(150), "Opus %d ms off the AAC timeline", near)
 
 	// and it arrives promptly: each Opus tag is written within a few hundred
-	// ms of the newest AAC tag before it (ffmpeg's probing once held a second)
+	// ms of the newest AAC tag before it
 	var lastAAC uint32
 	lag := int64(0)
 	var lags []int64

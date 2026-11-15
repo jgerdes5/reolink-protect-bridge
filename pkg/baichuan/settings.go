@@ -7,10 +7,9 @@ import (
 	"strings"
 )
 
-// Configuration commands of the Reolink doorbell firmware (D340W v3.0.0.4662),
-// from its netserver command table and libnetpublic XML builders, and
-// reolink_aio. Every setting is changed with GET -> modify -> SET of the whole
-// tree, as the firmware's SET handlers expect.
+// Configuration commands of the Reolink doorbell firmware (D340W). Every
+// setting is changed with GET -> modify -> SET of the whole tree, as the
+// firmware's SET handlers expect.
 const (
 	MsgImageGet    = 26  // VideoInput (brightness ...) + InputAdvanceCfg (ISP)
 	MsgImageSet    = 25  //
@@ -77,8 +76,7 @@ func AiDetectBody(channel uint8, aiType string) []byte {
 
 // Detection areas (motion scope/valueTable and AI area) are bitmaps of cols x
 // rows cells, row-major from the top, one bit per cell (1 = detect), MSB first,
-// base64 without line breaks (firmware get_area_from_xmlnode /
-// EncodeBinaryArrayToBase64).
+// base64 without line breaks.
 
 // EncodeArea packs cells[row*cols+col].
 func EncodeArea(cells []bool, cols, rows int) string {
@@ -108,7 +106,7 @@ func DecodeArea(s string, cols, rows int) ([]bool, error) {
 }
 
 // MsgIframeRequest makes the encoder of one stream start a new keyframe
-// (IFRAME_REQUEST; D340W netserver handler 0x54470, param RequestIframe).
+// (IFRAME_REQUEST).
 // The doorbell answers 200 at once, before the keyframe is made.
 const MsgIframeRequest = 189
 

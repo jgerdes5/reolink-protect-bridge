@@ -10,12 +10,9 @@ import (
 	"github.com/jgerdes5/reolink-protect-bridge/pkg/unifi"
 )
 
-// keyframer passes Protect's keyframe requests on to the doorbell. When a
-// viewer opens live view or switches quality, Protect's media server asks the
-// camera for a keyframe on that stream's socket (feedback type 1); a UniFi
-// camera forces an IDR frame, so the picture starts at once. The Reolink
-// equivalent is IFRAME_REQUEST (msg 189), sent over a control connection of
-// its own that is kept open between requests.
+// keyframer passes Protect's keyframe requests (feedback type 1, sent when
+// live view opens or switches quality) on to the doorbell as IFRAME_REQUEST
+// (msg 189), over a control connection kept open between requests.
 type keyframer struct {
 	dial func(ctx context.Context) (iframer, error)
 	ch   uint8
@@ -129,7 +126,7 @@ func streamType(channel string) string {
 
 // Troubleshooting switches (environment, read once): RPB_NO_RTT=1 leaves
 // Protect's round-trip probes unanswered, RPB_NO_KEYFRAME=1 ignores its
-// keyframe requests, as the bridge did before it handled them.
+// keyframe requests.
 var (
 	noRTT      = os.Getenv("RPB_NO_RTT") == "1"
 	noKeyframe = os.Getenv("RPB_NO_KEYFRAME") == "1"

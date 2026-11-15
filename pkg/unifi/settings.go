@@ -6,10 +6,9 @@ import (
 	"strconv"
 )
 
-// Settings receives the camera settings Protect 7.3 sends, so they can be
-// applied to the real camera. Calls arrive in the order Protect sends them,
-// from one goroutine, never on the protocol loop; on every (re)connect
-// Protect sends all of them once (applyLatestSettingsToCamera).
+// Settings receives the camera settings Protect sends, so they can be applied
+// to the real camera. Calls arrive in Protect's order, from one goroutine,
+// never on the protocol loop; on every (re)connect Protect sends all of them.
 type Settings interface {
 	ISP(ISP)
 	SoundLed(SoundLed)
@@ -152,7 +151,7 @@ type SmartDetect struct {
 	Lines       map[string]Line `json:"lines"`
 	LoiterZones map[string]Zone `json:"loiterZones"`
 	// exclusion zones: no smart detections there (objectTypes lists the
-	// types they apply to, all of them as Protect 7.3 sends it)
+	// types they apply to; Protect sends all of them)
 	ExcludeZones map[string]Zone `json:"excludeZones"`
 	StartMSec    int             `json:"eventStartMSec"`
 	StopMSec     int             `json:"eventStopMSec"`

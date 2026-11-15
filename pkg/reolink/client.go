@@ -93,7 +93,6 @@ func Dial(rawURL string) (*Client, error) {
 		c.backchannelEnabled = false
 	}
 
-	// parsing url
 	cfg := baichuan.Config{
 		Timeout: core.ConnDialTimeout,
 	}
@@ -115,7 +114,6 @@ func Dial(rawURL string) (*Client, error) {
 		}
 	}
 
-	// parsing stream name
 	c.stream = baichuan.StreamMain
 	path := strings.TrimPrefix(u.Path, "/")
 	if strings.EqualFold(path, "sub") || strings.EqualFold(path, "substream") {
@@ -124,7 +122,6 @@ func Dial(rawURL string) (*Client, error) {
 		c.stream = baichuan.StreamExtern
 	}
 
-	// channel
 	c.channel = 0
 	if chStr := u.Query().Get("channel"); chStr != "" {
 		if ch, err := strconv.Atoi(chStr); err == nil {
