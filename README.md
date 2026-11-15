@@ -40,9 +40,9 @@ would likely drain the battery within days.
 - Live view and continuous recording in high and low quality, with audio
 - Ring button with push notification and call screen
 - Two-way audio from the Protect app, the web interface and HomeKit
-- Motion events and smart detections (person, vehicle, animal, package) from
-  the doorbell's own AI, with bounding boxes in live view. Package detection is
-  turned on in the Reolink app
+- Motion events and smart detections (person, vehicle, animal) from the
+  doorbell's own AI, with bounding boxes in live view. Package detection is
+  passed on too, on doorbells that have it
 - Detection zones, exclusion zones, line crossing and loitering
 - Privacy masks
 - Protect's camera settings are applied to the doorbell: image, night vision,

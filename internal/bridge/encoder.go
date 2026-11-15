@@ -53,6 +53,16 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 		}
 	}
 
+	// Package detection exists only on some doorbells; the AI types it has on
+	// list it when the doorbell supports it and it is switched on.
+	if ai, err := client.GetConfig(ctx, baichuan.MsgAiCfgGet, ch, nil); err == nil && b.proto != nil {
+		pkg := contains(strings.Split(ai.Value("AiCfg/detectType"), ","), "package")
+		b.proto.SetPackage(pkg)
+		if pkg {
+			log.Info().Msg("[settings] the doorbell has package detection")
+		}
+	}
+
 	caps, err := client.GetConfig(ctx, msgEncCapGet, ch, nil)
 	if err != nil {
 		log.Debug().Err(err).Msg("[settings] encoder choices")

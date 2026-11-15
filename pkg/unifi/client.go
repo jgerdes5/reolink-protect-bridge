@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -92,6 +93,7 @@ type Camera struct {
 	st   Status
 
 	hdr           bool // HDR as Protect last set it
+	pkg           atomic.Bool
 	settingsOnce  sync.Once
 	settingsQueue chan func()
 }
@@ -580,6 +582,10 @@ func (c *Camera) stopChannel(name string) {
 // SetHDR tells the camera the HDR state the image sensor has, before Run:
 // Protect asks for it after connecting and only switches (and waits for a
 // stream restart) when it differs from what it wants.
+// SetPackage offers package detection to Protect (read at the next hello);
+// only some doorbells have it.
+func (c *Camera) SetPackage(on bool) { c.pkg.Store(on) }
+
 func (c *Camera) SetHDR(on bool) {
 	c.mu.Lock()
 	c.hdr = on

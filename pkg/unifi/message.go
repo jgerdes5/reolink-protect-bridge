@@ -71,13 +71,11 @@ func (c *Camera) featureFlags() map[string]any {
 		mic = 1
 	}
 	flags := map[string]any{
-		"mic":          mic,
-		"aec":          []any{},
-		"videoMode":    []string{"default"},
-		"motionDetect": []string{"enhanced"}, // ChangeSmartMotionSettings
-		// what Reolink's AI detects; lines and loitering are evaluated by the
-		// bridge from the doorbell's boxes (lineCrossing* unlock the line tab)
-		"smartDetect":    []string{"person", "vehicle", "animal", "package", "lineCrossing", "lineCrossingCounting"},
+		"mic":            mic,
+		"aec":            []any{},
+		"videoMode":      []string{"default"},
+		"motionDetect":   []string{"enhanced"}, // ChangeSmartMotionSettings
+		"smartDetect":    c.smartDetect(),
 		"videoCodecs":    c.videoCodecs(),
 		"audioCodecs":    []string{"aac"},
 		"audioStyle":     []string{"nature"},
@@ -109,6 +107,16 @@ func (c *Camera) featureFlags() map[string]any {
 		flags["speaker"] = true // hasSpeaker: talkback
 	}
 	return flags
+}
+
+// smartDetect is what the doorbell's AI detects; lines and loitering are
+// evaluated by the bridge from its boxes (lineCrossing* unlock the line tab).
+func (c *Camera) smartDetect() []string {
+	types := []string{"person", "vehicle", "animal"}
+	if c.pkg.Load() {
+		types = append(types, "package")
+	}
+	return append(types, "lineCrossing", "lineCrossingCounting")
 }
 
 func (c *Camera) helloPayload(token string) map[string]any {
