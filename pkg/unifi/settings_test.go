@@ -29,9 +29,14 @@ func (s *settingsLog) SmartDetect(v SmartDetect) {
 	s.mu.Unlock()
 }
 func (s *settingsLog) Motion(v Motion) { s.mu.Lock(); s.mot = append(s.mot, v); s.mu.Unlock() }
-func (s *settingsLog) HDR(on bool)     { s.mu.Lock(); s.hdr = append(s.hdr, on); s.mu.Unlock() }
-func (s *settingsLog) OSD(v OSD)       { s.mu.Lock(); s.osd = append(s.osd, v); s.mu.Unlock() }
-func (s *settingsLog) Video(v Video)   { s.mu.Lock(); s.video = append(s.video, v); s.mu.Unlock() }
+func (s *settingsLog) HDR(on bool, done func()) {
+	s.mu.Lock()
+	s.hdr = append(s.hdr, on)
+	s.mu.Unlock()
+	done()
+}
+func (s *settingsLog) OSD(v OSD)     { s.mu.Lock(); s.osd = append(s.osd, v); s.mu.Unlock() }
+func (s *settingsLog) Video(v Video) { s.mu.Lock(); s.video = append(s.video, v); s.mu.Unlock() }
 
 func TestApplySettings(t *testing.T) {
 	log := &settingsLog{}

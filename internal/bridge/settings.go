@@ -39,6 +39,7 @@ type settings struct {
 	hdrOn    *bool  // Protect's HDR switch (ChangeVideoSettings), kept across flushes
 	hdrMode  string // normal | superHdr (ChangeIspSettings), kept across flushes
 	hdrDirty bool
+	hdrDone  []func() // run after the next flush wrote (or tried) the HDR switch
 	sound    *unifi.SoundLed
 	smart    *unifi.SmartDetect
 	motion   *unifi.Motion
@@ -110,10 +111,17 @@ func (s *settings) ISP(v unifi.ISP) {
 	s.schedule()
 }
 
-func (s *settings) HDR(on bool) {
+func (s *settings) HDR(on bool, done func()) {
 	s.mu.Lock()
 	s.hdrOn = &on
 	s.hdrDirty = true
+	if done != nil {
+		if s.apply {
+			s.hdrDone = append(s.hdrDone, done)
+		} else {
+			defer done()
+		}
+	}
 	s.mu.Unlock()
 	s.schedule()
 }
@@ -320,6 +328,13 @@ func (s *settings) flush() {
 		return
 	}
 	p := s.take()
+	done := s.hdrDone
+	s.hdrDone = nil
+	defer func() {
+		for _, f := range done {
+			f()
+		}
+	}()
 	s.first = time.Time{}
 	hdr := ""
 	if p.hdr {

@@ -413,7 +413,7 @@ func (c *Consumer) EnableOpus() {
 func (c *Consumer) WriteOpus(pkt []byte, pos uint32, captured time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.wr == nil || c.closed || !c.started || !c.opus || len(pkt) == 0 {
+	if c.wr == nil || c.closed || !c.started || !c.opus || len(pkt) == 0 || captured.Before(c.mux.start) {
 		return
 	}
 	if c.oclock.rate == 0 {

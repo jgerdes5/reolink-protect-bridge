@@ -76,9 +76,18 @@ func TestHDRSwitch(t *testing.T) {
 	s := &settings{}
 	s.ISP(unifi.ISP{HdrMode: sptr("superHdr")})
 	require.False(t, s.hdrDirty) // HDR switch unknown yet: don't touch the doorbell
-	s.HDR(true)
+	s.HDR(true, nil)
 	require.True(t, s.hdrDirty)
 	require.Equal(t, "2", hdrSwitch(*s.hdrOn, s.hdrMode))
+}
+
+// Without applying settings, the HDR callback (stream restart) runs at once.
+func TestHDRDoneWithoutApply(t *testing.T) {
+	s := &settings{}
+	called := false
+	s.HDR(true, func() { called = true })
+	require.True(t, called)
+	require.Empty(t, s.hdrDone)
 }
 
 func TestLedChange(t *testing.T) {

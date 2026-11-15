@@ -45,6 +45,14 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 	defer client.Close()
 	ch := uint8(b.opts.Doorbell.Channel)
 
+	// The doorbell's HDR, so Protect sees the real state after a restart
+	// instead of switching it again.
+	if img, err := client.GetConfig(ctx, baichuan.MsgImageGet, ch, nil); err == nil {
+		if v := img.Value("InputAdvanceCfg/hdrSwitch"); v != "" && b.proto != nil {
+			b.proto.SetHDR(v != "0")
+		}
+	}
+
 	caps, err := client.GetConfig(ctx, msgEncCapGet, ch, nil)
 	if err != nil {
 		log.Debug().Err(err).Msg("[settings] encoder choices")
@@ -66,13 +74,6 @@ func (b *Bridge) loadEncoder(ctx context.Context) {
 	}
 	b.setEncoder(enc)
 
-	// The doorbell's HDR, so Protect sees the real state after a restart
-	// instead of switching it again.
-	if img, err := client.GetConfig(ctx, baichuan.MsgImageGet, ch, nil); err == nil {
-		if v := img.Value("InputAdvanceCfg/hdrSwitch"); v != "" && b.proto != nil {
-			b.proto.SetHDR(v != "0")
-		}
-	}
 	for i, s := range enc {
 		log.Info().Msgf("[settings] %s: %d fps %d kbit/s, keyframe interval %s, offers %v fps and %v kbit/s",
 			encStreams[i], s.fps, s.kbps, gopText(body, encStreams[i]), s.fpsTable, s.kbpsTable)

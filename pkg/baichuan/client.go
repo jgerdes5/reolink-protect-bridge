@@ -516,6 +516,7 @@ var forbiddenMsgIDs = map[uint32]bool{
 	483: true,
 	484: true, // DingDong (chime) options
 	485: true,
+	486: true,
 	487: true, // DingDong set
 	610: true, // DingDong silent set
 	619: true,

@@ -210,26 +210,13 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 							return
 						}
 						c.pcmBuf = c.pcmBuf[:0]
+						c.armTalkIdle() // closes it even if no more audio comes
 					}()
 				}
 				return
 			}
 
-			if c.talkTimer != nil {
-				c.talkTimer.Stop()
-			}
-			c.talkTimer = time.AfterFunc(TalkIdle, func() {
-				c.talkMu.Lock()
-				defer c.talkMu.Unlock()
-				if c.talkSession != nil {
-					c.logDebug("closing idle talkback session")
-					ctx, cancel := context.WithTimeout(context.Background(), core.ConnDialTimeout)
-					_ = c.talkSession.Close(ctx)
-					cancel()
-					c.talkSession = nil
-					c.talkEncoder = nil
-				}
-			})
+			c.armTalkIdle()
 
 			if transcoder == nil {
 				targetCodec := &core.Codec{
@@ -261,6 +248,26 @@ func (c *Client) AddTrack(media *core.Media, codec *core.Codec, track *core.Rece
 
 	c.sender.HandleRTP(track)
 	return nil
+}
+
+// armTalkIdle (re)starts the timer that closes the talk session after
+// TalkIdle without audio. Must be called with talkMu held.
+func (c *Client) armTalkIdle() {
+	if c.talkTimer != nil {
+		c.talkTimer.Stop()
+	}
+	c.talkTimer = time.AfterFunc(TalkIdle, func() {
+		c.talkMu.Lock()
+		defer c.talkMu.Unlock()
+		if c.talkSession != nil {
+			c.logDebug("closing idle talkback session")
+			ctx, cancel := context.WithTimeout(context.Background(), core.ConnDialTimeout)
+			_ = c.talkSession.Close(ctx)
+			cancel()
+			c.talkSession = nil
+			c.talkEncoder = nil
+		}
+	})
 }
 
 func (c *Client) SetupBackchannel() error {

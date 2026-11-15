@@ -74,12 +74,13 @@ func (o *opusEncoder) join(c *unifi.Consumer) {
 func (o *opusEncoder) leave(c *unifi.Consumer) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	for i, x := range o.outs {
-		if x == c {
-			o.outs = append(o.outs[:i], o.outs[i+1:]...)
-			return
+	outs := make([]*unifi.Consumer, 0, len(o.outs))
+	for _, x := range o.outs {
+		if x != c {
+			outs = append(outs, x)
 		}
 	}
+	o.outs = outs // readOgg iterates the old slice without the lock
 }
 
 // adtsWriter notes when each AAC frame arrived on its way to ffmpeg.
@@ -325,7 +326,11 @@ func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consu
 	}
 	if so == nil {
 		enc := newOpusEncoder()
-		if err := src.AddConsumer(ctx, enc); err != nil {
+		// bounded: omu is held, and a reconnecting source would block every channel
+		addCtx, cancelAdd := context.WithTimeout(ctx, 5*time.Second)
+		err := src.AddConsumer(addCtx, enc)
+		cancelAdd()
+		if err != nil {
 			return nil, err // no audio on this source
 		}
 		runCtx, cancel := context.WithCancel(context.Background())
@@ -346,8 +351,11 @@ func (b *Bridge) opusFor(ctx context.Context, src *source.Source, c *unifi.Consu
 		b.omu.Lock()
 		defer b.omu.Unlock()
 		so.users--
-		if so.users == 0 && b.opus[src.Name] == so {
-			delete(b.opus, src.Name)
+		if so.users == 0 {
+			if b.opus[src.Name] == so {
+				delete(b.opus, src.Name)
+			}
+			// also when a crashed encoder was already replaced in the map
 			src.RemoveConsumer(so.enc)
 			_ = so.enc.Stop()
 		}
