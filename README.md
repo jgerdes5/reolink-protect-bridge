@@ -9,9 +9,8 @@ work in the Protect app, without ONVIF or a third-party camera entry.
 
 > [!NOTE]
 > This is an early release, only tested with the Reolink Video Doorbell WiFi
-> and UniFi Protect 7.3, running as a systemd service. The Docker image and
-> the Home Assistant add-on haven't been tested yet. Reports from other models,
-> Protect versions and setups are welcome.
+> and UniFi Protect 7.3. Reports from other models and Protect versions are
+> welcome.
 
 ## Why
 
@@ -49,8 +48,8 @@ would likely drain the battery within days.
   HDR, status light, volume, overlay, frame rate and bitrate
 - Web interface with automatic discovery of the doorbell and the console
 - Runs as a Home Assistant add-on, in Docker or as a systemd service
-- Should appear in Home Assistant's UniFi Protect integration like any other
-  Protect doorbell (not tested yet)
+- Shows up in Home Assistant's UniFi Protect integration like any other
+  Protect doorbell, ready for automations
 
 ## Limitations
 
